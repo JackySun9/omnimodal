@@ -1,0 +1,1140 @@
+import { FormEvent, useEffect, useState, useRef } from 'react';
+import {
+  STTExecutor,
+  WhisperModel,
+  STTSegment,
+  STTTranscriptionRequest,
+} from '../../services/api';
+import { useSTTExecutors, useSTTModelsList, useLoadSTTModel } from '../../hooks';
+import { useTranscribeAudio } from '../../hooks/useSTTTranscription';
+import { useErrorHandler } from '../../hooks/useErrorHandler';
+import { useDownloads } from '../../hooks/useDownloads';
+import { useScheduleDownload } from '../../hooks/useModels';
+
+interface Transcription {
+  id: string;
+  text: string;
+  segments: STTSegment[];
+  metadata: Record<string, unknown>;
+  timestamp: Date;
+  file: File;
+}
+
+const LANGUAGES = [
+  { code: null, name: 'Auto-detect' },
+  { code: 'en', name: 'English' },
+  { code: 'es', name: 'Spanish' },
+  { code: 'fr', name: 'French' },
+  { code: 'de', name: 'German' },
+  { code: 'it', name: 'Italian' },
+  { code: 'pt', name: 'Portuguese' },
+  { code: 'nl', name: 'Dutch' },
+  { code: 'ru', name: 'Russian' },
+  { code: 'zh', name: 'Chinese' },
+  { code: 'ja', name: 'Japanese' },
+  { code: 'ko', name: 'Korean' },
+  { code: 'ar', name: 'Arabic' },
+  { code: 'tr', name: 'Turkish' },
+  { code: 'pl', name: 'Polish' },
+  { code: 'uk', name: 'Ukrainian' },
+  { code: 'vi', name: 'Vietnamese' },
+  { code: 'th', name: 'Thai' },
+  { code: 'id', name: 'Indonesian' },
+  { code: 'he', name: 'Hebrew' },
+  { code: 'fa', name: 'Persian' },
+];
+
+export function AudioPage() {
+  const [file, setFile] = useState<File | null>(null);
+  const [transcriptions, setTranscriptions] = useState<Transcription[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+
+  // Hooks
+  const { data: executorsData, isLoading: executorsLoading } = useSTTExecutors();
+  const { data: modelsData, isLoading: modelsLoading } = useSTTModelsList();
+  const loadSTTModelMutation = useLoadSTTModel();
+  const transcribeMutation = useTranscribeAudio();
+  const { handleError, handleSuccess, handleLoading } = useErrorHandler('STT');
+
+  // Auto-init state
+  const [autoInitializing, setAutoInitializing] = useState(false);
+  const [autoInitMessage, setAutoInitMessage] = useState<string>('');
+  const hasAutoInitializedRef = useRef(false);
+
+  // Configuration
+  const [selectedExecutor, setSelectedExecutor] = useState('faster-whisper-stt');
+  const [selectedModel, setSelectedModel] = useState('base');
+  const [language, setLanguage] = useState<string | null>(null);
+  const [task, setTask] = useState<'transcribe' | 'translate'>('transcribe');
+  const [temperature, setTemperature] = useState(0.0);
+  const [wordTimestamps, setWordTimestamps] = useState(false);
+  const [vadFilter, setVadFilter] = useState(true);
+  const [beamSize, setBeamSize] = useState(5);
+  const [initialPrompt, setInitialPrompt] = useState('');
+  
+  const [showModelSelector, setShowModelSelector] = useState(false);
+  const transcriptionsEndRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const executors = executorsData?.executors || {};
+  const models = modelsData?.models || [];
+  const loadingInfo = executorsLoading || modelsLoading;
+
+  useEffect(() => {
+    if (transcriptions.length > 0) {
+      transcriptionsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [transcriptions]);
+
+  // Auto-select recommended executor and first model
+  useEffect(() => {
+    if (executorsData?.recommended) {
+      setSelectedExecutor(executorsData.recommended);
+    }
+    if (models.length > 0 && selectedModel === 'base') {
+      setSelectedModel(models[0].name);
+    }
+  }, [executorsData, models, selectedModel]);
+
+  // Auto-download and load model on first use
+  useEffect(() => {
+    const autoInitialize = async () => {
+      // Only run once
+      if (hasAutoInitializedRef.current) return;
+      
+      // Wait for data to load
+      if (loadingInfo || !executorsData || !modelsData || models.length === 0) return;
+      
+      const executorInfo = executors[selectedExecutor];
+      if (!executorInfo?.is_running) return;
+
+      // Check if model is already loaded by checking executor detail
+      const loadedModel = executorInfo.detail?.loaded_model as string | undefined;
+      if (loadedModel) {
+        // Model is already loaded, use it
+        if (loadedModel !== selectedModel) {
+          setSelectedModel(loadedModel);
+        }
+        hasAutoInitializedRef.current = true;
+        return;
+      }
+
+      // No model loaded, auto-download and load
+      const defaultModel = modelsData.recommendation || models[0].name;
+      if (defaultModel !== selectedModel) {
+        setSelectedModel(defaultModel);
+        // Wait a tick for state to update
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      
+      try {
+        setAutoInitializing(true);
+        setAutoInitMessage(`Downloading and loading model "${defaultModel}"...`);
+        const loadingToast = handleLoading(`Setting up ${defaultModel} model for first-time use...`);
+
+        // The loadSTTModel API will automatically download if not present
+        await loadSTTModelMutation.mutateAsync({
+          executorName: selectedExecutor,
+          modelSize: defaultModel,
+        });
+
+        handleSuccess(`Model "${defaultModel}" is ready to use!`);
+        setAutoInitMessage('');
+        hasAutoInitializedRef.current = true;
+      } catch (err) {
+        // Extract detailed error message
+        let errorMsg = 'Failed to initialize model';
+        if (err && typeof err === 'object' && 'response' in err) {
+          const axiosError = err as any;
+          if (axiosError.response?.data?.detail) {
+            errorMsg = axiosError.response.data.detail;
+          } else {
+            errorMsg = handleError(err);
+          }
+        } else {
+          errorMsg = handleError(err);
+        }
+        
+        setAutoInitMessage(`Failed to initialize: ${errorMsg}`);
+        console.error('STT auto-init error:', err);
+        // Don't set hasAutoInitializedRef to true so user can retry
+      } finally {
+        setAutoInitializing(false);
+      }
+    };
+
+    void autoInitialize();
+  }, [executorsData, modelsData, models, selectedExecutor, loadingInfo, executors, loadSTTModelMutation, handleError, handleSuccess, handleLoading]);
+
+  // Clear success message after 3 seconds
+  useEffect(() => {
+    if (successMessage) {
+      const timer = setTimeout(() => setSuccessMessage(null), 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [successMessage]);
+
+  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = event.target.files;
+    if (files && files.length > 0) {
+      const selectedFile = files[0];
+      
+      // Validate file type
+      if (!selectedFile.type.startsWith('audio/')) {
+        setError('Please select a valid audio file');
+        return;
+      }
+      
+      // Validate file size (max 100MB)
+      if (selectedFile.size > 100 * 1024 * 1024) {
+        setError('Audio file is too large. Maximum size is 100MB.');
+        return;
+      }
+      
+      setFile(selectedFile);
+      setError(null);
+    }
+  };
+
+  const clearFile = () => {
+    setFile(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
+  const handleLoadModel = async () => {
+    if (!selectedExecutor || !selectedModel) return;
+
+    try {
+      await loadSTTModelMutation.mutateAsync({
+        executorName: selectedExecutor,
+        modelSize: selectedModel,
+      });
+      handleSuccess(`Model "${selectedModel}" loaded successfully into ${selectedExecutor}!`);
+    } catch (err) {
+      handleError(err);
+    }
+  };
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!file || !selectedExecutorInfo?.is_running) return;
+
+    setLoading(true);
+    setError(null);
+    setSuccessMessage(null);
+
+    try {
+      const request: STTTranscriptionRequest = {
+        audio: file,
+        executor: selectedExecutor,
+        language: language,
+        task: task,
+        temperature: temperature,
+        word_timestamps: wordTimestamps,
+        initial_prompt: initialPrompt || null,
+        vad_filter: vadFilter,
+        beam_size: beamSize,
+      };
+
+      const response = await transcribeMutation.mutateAsync(request);
+      
+      const newTranscription: Transcription = {
+        id: `transcription-${Date.now()}`,
+        text: response.text,
+        segments: response.segments,
+        metadata: response.metadata,
+        timestamp: new Date(),
+        file: file,
+      };
+      
+      setTranscriptions((prev) => [...prev, newTranscription]);
+      handleSuccess('Transcription completed successfully!');
+      clearFile(); // Clear file input after successful transcription
+    } catch (err) {
+      handleError(err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const formatTime = (seconds: number): string => {
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    const ms = Math.floor((seconds % 1) * 1000);
+    return `${mins}:${secs.toString().padStart(2, '0')}.${ms.toString().padStart(3, '0')}`;
+  };
+
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text).then(() => {
+      setSuccessMessage('Transcription copied to clipboard!');
+    }).catch(() => {
+      setError('Failed to copy to clipboard');
+    });
+  };
+
+  const downloadTranscription = (transcription: Transcription) => {
+    const blob = new Blob([transcription.text], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `transcription-${transcription.file.name.replace(/\.[^/.]+$/, '')}-${Date.now()}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+    setSuccessMessage('Download started!');
+  };
+
+  const clearTranscriptions = () => {
+    if (confirm('Are you sure you want to clear all transcriptions?')) {
+      setTranscriptions([]);
+    }
+  };
+
+  const deleteTranscription = (id: string) => {
+    setTranscriptions((prev) => prev.filter(t => t.id !== id));
+  };
+
+  if (loadingInfo) {
+    return (
+      <div className="fade-in" style={{ padding: '2rem', textAlign: 'center' }}>
+        <div className="loading shimmer" style={{ width: '3rem', height: '3rem', margin: '0 auto', borderRadius: '50%' }}></div>
+        <p style={{ marginTop: '1rem', color: 'var(--text-secondary)' }}>Loading audio transcription...</p>
+      </div>
+    );
+  }
+
+  const selectedExecutorInfo = executors[selectedExecutor];
+  const selectedModelInfo = models.find(m => m.name === selectedModel);
+
+  // Check if no executors available
+  if (Object.keys(executors).length === 0 && !loadingInfo) {
+    return (
+      <div className="fade-in" style={{ padding: '2rem' }}>
+        <div style={{ 
+          padding: '2rem', 
+          backgroundColor: 'var(--warning-bg)', 
+          borderRadius: 'var(--radius-lg)',
+          border: '1px solid var(--warning)',
+          textAlign: 'center',
+        }}>
+          <h3 style={{ fontSize: '3rem', marginBottom: '1rem' }}>??</h3>
+          <h3>No STT Executors Available</h3>
+          <p style={{ marginBottom: '1.5rem', color: 'var(--text-secondary)' }}>Please ensure the STT backend services are running.</p>
+          <button 
+            onClick={() => window.location.reload()} 
+            style={{ 
+              marginTop: '1rem',
+              padding: '0.75rem 1.5rem',
+              background: 'var(--primary-gradient)',
+              boxShadow: 'var(--shadow-md)',
+            }}
+          >
+            Refresh Page
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <section className="scale-in" style={{ display: 'grid', gridTemplateColumns: showModelSelector ? '350px 1fr' : '1fr', height: '100%', gap: '1rem', padding: '1.5rem', overflow: 'hidden', transition: 'grid-template-columns 0.3s ease' }}>
+      {/* Model Selector Sidebar */}
+      {showModelSelector && (
+        <div className="glass slide-in-left" style={{ 
+          display: 'flex', 
+          flexDirection: 'column',
+          borderRadius: 'var(--radius-xl)',
+          padding: '1.5rem',
+          boxShadow: 'var(--shadow-lg)',
+          overflowY: 'auto',
+          maxHeight: '100%',
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
+            <h3 style={{ margin: 0, fontSize: '1.125rem', fontWeight: 700 }}>
+              Models ({models.length})
+            </h3>
+            <button
+              onClick={() => setShowModelSelector(false)}
+              style={{
+                padding: '0.5rem',
+                background: 'var(--bg-tertiary)',
+                border: 'none',
+                cursor: 'pointer',
+                borderRadius: 'var(--radius-sm)',
+                transition: 'all 0.2s ease',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = 'var(--error-bg)';
+                e.currentTarget.style.color = 'var(--error)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = 'var(--bg-tertiary)';
+                e.currentTarget.style.color = 'var(--text-primary)';
+              }}
+              title="Hide model list"
+              aria-label="Close model selector"
+            >
+              ?
+            </button>
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', flex: 1, overflowY: 'auto' }}>
+            {models.length === 0 ? (
+              <div style={{ padding: '1rem', textAlign: 'center', color: 'var(--text-secondary)' }}>
+                <p style={{ fontSize: '0.875rem' }}>No models available</p>
+              </div>
+            ) : (
+              models.map((model) => (
+                <button
+                  key={model.name}
+                  onClick={() => {
+                    setSelectedModel(model.name);
+                    setError(null);
+                  }}
+                  style={{
+                    padding: '0.75rem 1rem',
+                    textAlign: 'left',
+                    background: selectedModel === model.name 
+                      ? 'linear-gradient(135deg, rgba(59, 130, 246, 0.15), rgba(59, 130, 246, 0.08))'
+                      : 'var(--bg-secondary)',
+                    border: selectedModel === model.name 
+                      ? '2px solid var(--info)'
+                      : '1px solid var(--border-color)',
+                    borderRadius: 'var(--radius-md)',
+                    cursor: 'pointer',
+                    transition: 'all 0.2s ease',
+                    boxShadow: selectedModel === model.name 
+                      ? '0 2px 8px rgba(59, 130, 246, 0.2)'
+                      : '0 1px 2px rgba(0, 0, 0, 0.05)',
+                    width: '100%',
+                    minHeight: 'fit-content',
+                    color: 'var(--text-primary)',
+                    outline: 'none',
+                  }}
+                  onMouseEnter={(e) => {
+                    if (selectedModel !== model.name) {
+                      e.currentTarget.style.background = 'var(--bg-tertiary)';
+                      e.currentTarget.style.borderColor = 'var(--info)';
+                    }
+                  }}
+                  onMouseLeave={(e) => {
+                    if (selectedModel !== model.name) {
+                      e.currentTarget.style.background = 'var(--bg-secondary)';
+                      e.currentTarget.style.borderColor = 'var(--border-color)';
+                    }
+                  }}
+                  title={model.name}
+                  aria-label={`Select model ${model.name}`}
+                >
+                  <div style={{ 
+                    fontWeight: 500, 
+                    fontSize: '0.875rem',
+                    marginBottom: '0.25rem', 
+                    overflow: 'hidden', 
+                    textOverflow: 'ellipsis', 
+                    whiteSpace: 'nowrap',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.5rem',
+                    color: 'var(--text-primary)',
+                  }}>
+                    {selectedModel === model.name && (
+                      <span style={{ color: 'var(--info)', fontSize: '0.875rem', fontWeight: 600 }}>?</span>
+                    )}
+                    <span style={{ 
+                      fontFamily: 'monospace', 
+                      fontSize: '0.875rem',
+                      color: 'var(--text-primary)',
+                    }}>
+                      {model.name.toUpperCase()}
+                    </span>
+                  </div>
+                  <div style={{ 
+                    fontSize: '0.75rem', 
+                    color: 'var(--text-secondary)',
+                  }}>
+                    {model.params} ? {model.vram}
+                  </div>
+                  <div style={{ 
+                    fontSize: '0.7rem', 
+                    color: 'var(--text-secondary)',
+                    marginTop: '0.25rem',
+                    fontStyle: 'italic',
+                  }}>
+                    {model.speed}
+                  </div>
+                </button>
+              ))
+            )}
+          </div>
+
+            <button
+                onClick={handleLoadModel}
+                disabled={loadSTTModelMutation.isPending || !selectedExecutor || !selectedModel}
+                style={{
+                  marginTop: '1rem',
+                  padding: '0.75rem',
+                  fontSize: '0.875rem',
+                  background: loadSTTModelMutation.isPending || !selectedExecutor || !selectedModel ? 'var(--bg-tertiary)' : 'var(--info-gradient)',
+                  boxShadow: 'var(--shadow-md)',
+                }}
+              >
+                {loadSTTModelMutation.isPending ? '?? Loading...' : '?? Pre-load Model'}
+              </button>
+        </div>
+      )}
+
+      {/* Main Transcription Area */}
+      <div style={{ display: 'flex', flexDirection: 'column', height: '100%', gap: '1rem', minWidth: 0, overflow: 'hidden' }}>
+        {/* Auto-initialization indicator */}
+        {autoInitializing && (
+          <div className="glass" style={{
+            padding: '1rem',
+            borderRadius: 'var(--radius-xl)',
+            backgroundColor: 'var(--info-bg)',
+            border: '1px solid var(--info)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '1rem',
+          }}>
+            <div className="loading" style={{ width: '1.5rem', height: '1.5rem' }}></div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontWeight: 600, marginBottom: '0.25rem' }}>Setting up Speech-to-Text...</div>
+              <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
+                {autoInitMessage || 'Downloading and loading model for first-time use'}
+              </div>
+            </div>
+          </div>
+        )}
+        {/* Header */}
+        <div className="glass" style={{ 
+          display: 'flex', 
+          justifyContent: 'space-between', 
+          alignItems: 'center', 
+          padding: '1.25rem',
+          borderRadius: 'var(--radius-xl)',
+          boxShadow: 'var(--shadow-md)',
+          flexWrap: 'wrap',
+          gap: '1rem',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flex: 1, minWidth: 0 }}>
+            {!showModelSelector && (
+              <button
+                onClick={() => setShowModelSelector(true)}
+                style={{
+                  padding: '0.75rem',
+                  background: 'var(--info-gradient)',
+                  border: 'none',
+                  cursor: 'pointer',
+                  borderRadius: 'var(--radius-md)',
+                  color: 'white',
+                  fontWeight: 600,
+                  fontSize: '0.875rem',
+                  boxShadow: 'var(--shadow-md)',
+                  whiteSpace: 'nowrap',
+                  transition: 'all 0.2s ease',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.transform = 'translateY(-1px)';
+                  e.currentTarget.style.boxShadow = 'var(--shadow-glow)';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.transform = 'none';
+                  e.currentTarget.style.boxShadow = 'var(--shadow-md)';
+                }}
+                title="Show model list"
+                aria-label="Open model selector"
+              >
+                Models
+              </button>
+            )}
+            
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <h3 className="gradient-text" style={{ margin: 0, fontSize: '1.25rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                ?? Speech-to-Text: {selectedModelInfo ? selectedModelInfo.name.toUpperCase() : 'Select Model'}
+              </h3>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.25rem', flexWrap: 'wrap' }}>
+                <span className={selectedExecutorInfo?.is_running ? 'tag tag-success' : 'tag tag-error'} style={{ fontSize: '0.75rem' }}>
+                  {selectedExecutorInfo?.is_running ? '? Online' : '? Offline'}
+                </span>
+                <span className="tag tag-primary" style={{ fontSize: '0.75rem' }}>
+                  {selectedExecutorInfo?.detail?.runtime as string || 'Unknown'}
+                </span>
+                {task === 'translate' && (
+                  <span className="tag tag-warning" style={{ fontSize: '0.75rem' }}>
+                    Translate
+                  </span>
+                )}
+                {transcriptions.length > 0 && (
+                  <span className="tag" style={{ fontSize: '0.75rem' }}>
+                    {transcriptions.length} transcription{transcriptions.length !== 1 ? 's' : ''}
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+            {transcriptions.length > 0 && (
+              <button 
+                type="button" 
+                onClick={clearTranscriptions} 
+                disabled={loading}
+                style={{ 
+                  background: 'var(--error-gradient)',
+                  boxShadow: 'var(--shadow-md)',
+                  padding: '0.75rem 1.25rem',
+                  fontSize: '0.875rem',
+                  whiteSpace: 'nowrap',
+                  transition: 'all 0.2s ease',
+                }}
+                onMouseEnter={(e) => {
+                  if (!loading) {
+                    e.currentTarget.style.transform = 'translateY(-1px)';
+                  }
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.transform = 'none';
+                }}
+                title="Clear all transcriptions"
+              >
+                Clear ({transcriptions.length})
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Error/Success Messages */}
+        {error && (
+          <div className="glass" style={{
+            padding: '1rem',
+            borderRadius: 'var(--radius-xl)',
+            backgroundColor: 'var(--error-bg)',
+            border: '1px solid var(--error)',
+            color: 'var(--error)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '1rem',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flex: 1 }}>
+              <span style={{ fontSize: '1.25rem' }}>??</span>
+              <span style={{ fontSize: '0.875rem' }}>{error}</span>
+            </div>
+            <button
+              onClick={() => setError(null)}
+              style={{
+                padding: '0.25rem 0.5rem',
+                background: 'transparent',
+                border: 'none',
+                cursor: 'pointer',
+                color: 'var(--error)',
+                fontSize: '1.25rem',
+                lineHeight: 1,
+              }}
+              aria-label="Dismiss error"
+            >
+              ?
+            </button>
+          </div>
+        )}
+
+        {successMessage && (
+          <div className="glass" style={{
+            padding: '1rem',
+            borderRadius: 'var(--radius-xl)',
+            backgroundColor: 'var(--success-bg)',
+            border: '1px solid var(--success)',
+            color: 'var(--success)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '1rem',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flex: 1 }}>
+              <span style={{ fontSize: '1.25rem' }}>?</span>
+              <span style={{ fontSize: '0.875rem' }}>{successMessage}</span>
+            </div>
+            <button
+              onClick={() => setSuccessMessage(null)}
+              style={{
+                padding: '0.25rem 0.5rem',
+                background: 'transparent',
+                border: 'none',
+                cursor: 'pointer',
+                color: 'var(--success)',
+                fontSize: '1.25rem',
+                lineHeight: 1,
+              }}
+              aria-label="Dismiss success message"
+            >
+              ?
+            </button>
+          </div>
+        )}
+
+        {/* Configuration Panel */}
+        <details className="glass" style={{ 
+          padding: '1rem', 
+          borderRadius: 'var(--radius-xl)',
+          boxShadow: 'var(--shadow-md)',
+        }}>
+          <summary style={{ cursor: 'pointer', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.5rem', userSelect: 'none' }}>
+            ?? Settings
+          </summary>
+          <div style={{ marginTop: '1rem', display: 'grid', gap: '1rem' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem' }}>
+              <div>
+                <label style={{ display: 'block', fontWeight: 600, marginBottom: '0.5rem', fontSize: '0.875rem' }}>
+                  Executor:
+                </label>
+                <select
+                  value={selectedExecutor}
+                  onChange={(e) => {
+                    setSelectedExecutor(e.target.value);
+                    setError(null);
+                  }}
+                  style={{ width: '100%', padding: '0.5rem' }}
+                  disabled={loading}
+                >
+                  {Object.keys(executors).map((key) => {
+                    const exec = executors[key];
+                    return (
+                      <option key={key} value={key}>
+                        {key} {exec.is_running ? '?' : '??'}
+                      </option>
+                    );
+                  })}
+                </select>
+                {selectedExecutorInfo && (
+                  <div style={{ marginTop: '0.5rem', padding: '0.5rem', backgroundColor: 'var(--bg-secondary)', borderRadius: 'var(--radius-md)', fontSize: '0.75rem' }}>
+                    <div>Status: {selectedExecutorInfo.is_running ? <span style={{ color: 'var(--success)' }}>? Running</span> : <span style={{ color: 'var(--warning)' }}>?? Not Ready</span>}</div>
+                    {selectedExecutorInfo.detail.device && (
+                      <div>Device: {selectedExecutorInfo.detail.device as string}</div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontWeight: 600, marginBottom: '0.5rem', fontSize: '0.875rem' }}>
+                  Language:
+                </label>
+                <select
+                  value={language || ''}
+                  onChange={(e) => setLanguage(e.target.value || null)}
+                  style={{ width: '100%', padding: '0.5rem' }}
+                  disabled={loading}
+                >
+                  {LANGUAGES.map((lang) => (
+                    <option key={lang.code || 'auto'} value={lang.code || ''}>
+                      {lang.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontWeight: 600, marginBottom: '0.5rem', fontSize: '0.875rem' }}>
+                  Task:
+                </label>
+                <div style={{ display: 'flex', gap: '0.75rem' }}>
+                  <label style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.75rem', border: `2px solid ${task === 'transcribe' ? 'var(--primary-color)' : 'var(--border-color)'}`, borderRadius: 'var(--radius-md)', cursor: 'pointer', transition: 'all 0.2s ease' }}>
+                    <input
+                      type="radio"
+                      name="task"
+                      value="transcribe"
+                      checked={task === 'transcribe'}
+                      onChange={(e) => setTask(e.target.value as 'transcribe')}
+                      disabled={loading}
+                    />
+                    <span>Transcribe</span>
+                  </label>
+                  <label style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.75rem', border: `2px solid ${task === 'translate' ? 'var(--primary-color)' : 'var(--border-color)'}`, borderRadius: 'var(--radius-md)', cursor: 'pointer', transition: 'all 0.2s ease' }}>
+                    <input
+                      type="radio"
+                      name="task"
+                      value="translate"
+                      checked={task === 'translate'}
+                      onChange={(e) => setTask(e.target.value as 'translate')}
+                      disabled={loading}
+                    />
+                    <span>Translate</span>
+                  </label>
+                </div>
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontWeight: 600, marginBottom: '0.5rem', fontSize: '0.875rem' }}>
+                  Temperature: {temperature.toFixed(1)}
+                </label>
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.1"
+                  value={temperature}
+                  onChange={(e) => setTemperature(parseFloat(e.target.value))}
+                  style={{ width: '100%' }}
+                  disabled={loading}
+                />
+                <small style={{ display: 'block', marginTop: '0.25rem', color: 'var(--text-secondary)', fontSize: '0.75rem' }}>
+                  0.0 = deterministic, higher = more random
+                </small>
+              </div>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '0.75rem' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.875rem' }}>
+                <input
+                  type="checkbox"
+                  checked={wordTimestamps}
+                  onChange={(e) => setWordTimestamps(e.target.checked)}
+                  disabled={loading}
+                />
+                <span>Word timestamps</span>
+              </label>
+
+              <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.875rem' }}>
+                <input
+                  type="checkbox"
+                  checked={vadFilter}
+                  onChange={(e) => setVadFilter(e.target.checked)}
+                  disabled={loading}
+                />
+                <span>VAD filtering</span>
+              </label>
+            </div>
+
+            <div>
+              <label style={{ display: 'block', fontWeight: 600, marginBottom: '0.5rem', fontSize: '0.875rem' }}>
+                Beam Size: {beamSize}
+              </label>
+              <input
+                type="range"
+                min="1"
+                max="10"
+                step="1"
+                value={beamSize}
+                onChange={(e) => setBeamSize(parseInt(e.target.value))}
+                style={{ width: '100%' }}
+                disabled={loading}
+              />
+              <small style={{ display: 'block', marginTop: '0.25rem', color: 'var(--text-secondary)', fontSize: '0.75rem' }}>
+                Higher = better accuracy but slower
+              </small>
+            </div>
+
+            <label style={{ fontSize: '0.875rem' }}>
+              Initial Prompt (optional):
+              <textarea
+                value={initialPrompt}
+                onChange={(e) => setInitialPrompt(e.target.value)}
+                placeholder="Guide the model's transcription style..."
+                rows={2}
+                style={{ width: '100%', marginTop: '0.25rem', fontSize: '0.875rem', padding: '0.5rem' }}
+                disabled={loading}
+              />
+            </label>
+          </div>
+        </details>
+
+        {/* Transcription Results */}
+        <div
+          className="glass"
+          style={{
+            flex: '1 1 auto',
+            overflowY: 'auto',
+            overflowX: 'hidden',
+            borderRadius: 'var(--radius-xl)',
+            padding: '1.5rem',
+            boxShadow: 'inset 0 2px 8px rgba(0, 0, 0, 0.05)',
+            minHeight: 0,
+            maxHeight: '100%',
+          }}
+        >
+          {loading && (
+            <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-secondary)' }}>
+              <div className="loading shimmer" style={{ width: '3rem', height: '3rem', margin: '0 auto', borderRadius: '50%' }}></div>
+              <p style={{ marginTop: '1rem', fontSize: '1.125rem', fontWeight: 500 }}>Transcribing audio...</p>
+              <p style={{ marginTop: '0.5rem', fontSize: '0.875rem' }}>This may take a moment</p>
+            </div>
+          )}
+
+          {!loading && transcriptions.length === 0 && (
+            <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-secondary)' }}>
+              <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>??</div>
+              <p style={{ fontSize: '1.125rem', fontWeight: 500 }}>Upload an audio file to transcribe</p>
+              <p style={{ fontSize: '0.875rem', marginTop: '0.5rem' }}>
+                Using: <strong>{selectedModelInfo ? selectedModelInfo.name.toUpperCase() : ''}</strong>
+              </p>
+              <p style={{ fontSize: '0.75rem', marginTop: '0.5rem', color: 'var(--text-secondary)' }}>
+                Supported formats: MP3, WAV, OGG, M4A, FLAC (max 100MB)
+              </p>
+            </div>
+          )}
+
+          {!loading && transcriptions.length > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+              {transcriptions.map((transcription) => (
+                <div
+                  key={transcription.id}
+                  className="slide-in-right"
+                  style={{
+                    padding: '1rem',
+                    borderRadius: 'var(--radius-lg)',
+                    background: 'var(--bg-primary)',
+                    border: '2px solid var(--border-color)',
+                    boxShadow: 'var(--shadow-sm)',
+                    position: 'relative',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flex: 1, minWidth: 0 }}>
+                      <span style={{ fontSize: '1.125rem' }}>??</span>
+                      <strong style={{ fontSize: '0.875rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {transcription.file.name}
+                      </strong>
+                      <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>
+                        {(transcription.file.size / 1024 / 1024).toFixed(2)} MB
+                      </span>
+                      <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>
+                        {transcription.timestamp.toLocaleTimeString()}
+                      </span>
+                    </div>
+                    <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                      <button
+                        type="button"
+                        onClick={() => copyToClipboard(transcription.text)}
+                        style={{ 
+                          padding: '0.5rem 0.75rem', 
+                          fontSize: '0.875rem',
+                          background: 'var(--info-gradient)',
+                          boxShadow: 'var(--shadow-sm)',
+                          transition: 'all 0.2s ease',
+                        }}
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.transform = 'translateY(-1px)';
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.transform = 'none';
+                        }}
+                        title="Copy to clipboard"
+                        aria-label="Copy transcription"
+                      >
+                        ?? Copy
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => downloadTranscription(transcription)}
+                        style={{ 
+                          padding: '0.5rem 0.75rem', 
+                          fontSize: '0.875rem',
+                          background: 'var(--success-gradient)',
+                          boxShadow: 'var(--shadow-sm)',
+                          transition: 'all 0.2s ease',
+                        }}
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.transform = 'translateY(-1px)';
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.transform = 'none';
+                        }}
+                        title="Download as text file"
+                        aria-label="Download transcription"
+                      >
+                        ?? Download
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => deleteTranscription(transcription.id)}
+                        style={{ 
+                          padding: '0.5rem 0.75rem', 
+                          fontSize: '0.875rem',
+                          background: 'var(--error-gradient)',
+                          boxShadow: 'var(--shadow-sm)',
+                          transition: 'all 0.2s ease',
+                        }}
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.transform = 'translateY(-1px)';
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.transform = 'none';
+                        }}
+                        title="Delete transcription"
+                        aria-label="Delete transcription"
+                      >
+                        ???
+                      </button>
+                    </div>
+                  </div>
+
+                  <div style={{
+                    padding: '1rem',
+                    backgroundColor: 'var(--bg-secondary)',
+                    borderRadius: 'var(--radius-md)',
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-word',
+                    marginBottom: '0.75rem',
+                    fontSize: '0.9375rem',
+                    lineHeight: '1.6',
+                    maxHeight: '400px',
+                    overflowY: 'auto',
+                  }}>
+                    {transcription.text || '(No transcription text)'}
+                  </div>
+
+                  {transcription.segments && transcription.segments.length > 0 && (
+                    <details>
+                      <summary style={{ cursor: 'pointer', fontSize: '0.875rem', color: 'var(--text-secondary)', userSelect: 'none', padding: '0.5rem 0' }}>
+                        ?? Segments ({transcription.segments.length})
+                      </summary>
+                      <div style={{
+                        marginTop: '0.75rem',
+                        maxHeight: '300px',
+                        overflowY: 'auto',
+                        display: 'grid',
+                        gap: '0.5rem',
+                      }}>
+                        {transcription.segments.map((segment) => (
+                          <div
+                            key={segment.id}
+                            style={{
+                              padding: '0.75rem',
+                              backgroundColor: 'var(--bg-tertiary)',
+                              borderRadius: 'var(--radius-md)',
+                              borderLeft: '3px solid var(--info)',
+                            }}
+                          >
+                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                              <span>#{segment.id}</span>
+                              <span>{formatTime(segment.start)} ? {formatTime(segment.end)}</span>
+                            </div>
+                            <div style={{ fontSize: '0.875rem' }}>{segment.text}</div>
+                            {segment.words && segment.words.length > 0 && wordTimestamps && (
+                              <details style={{ marginTop: '0.5rem' }}>
+                                <summary style={{ cursor: 'pointer', fontSize: '0.75rem', color: 'var(--text-secondary)', userSelect: 'none' }}>
+                                  Word timings ({segment.words.length})
+                                </summary>
+                                <div style={{ marginTop: '0.5rem', display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+                                  {segment.words.map((word, idx) => (
+                                    <span
+                                      key={idx}
+                                      style={{
+                                        padding: '0.25rem 0.5rem',
+                                        backgroundColor: 'var(--bg-secondary)',
+                                        borderRadius: 'var(--radius-sm)',
+                                        fontSize: '0.75rem',
+                                      }}
+                                      title={`${formatTime(word.start)} - ${formatTime(word.end)}`}
+                                    >
+                                      {word.word}
+                                    </span>
+                                  ))}
+                                </div>
+                              </details>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </details>
+                  )}
+                </div>
+              ))}
+              <div ref={transcriptionsEndRef} />
+            </div>
+          )}
+        </div>
+
+        {/* Input Form */}
+        <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+          <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'flex-end' }}>
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="audio/*"
+                  onChange={handleFileChange}
+                  style={{ 
+                    flex: 1,
+                    padding: '0.75rem',
+                    borderRadius: 'var(--radius-md)',
+                    border: '2px solid var(--border-color)',
+                    fontSize: '0.9375rem',
+                    cursor: 'pointer',
+                  }}
+                  disabled={loading}
+                />
+                {file && (
+                  <button
+                    type="button"
+                    onClick={clearFile}
+                    style={{
+                      padding: '0.5rem',
+                      background: 'var(--error-bg)',
+                      color: 'var(--error)',
+                      border: 'none',
+                      borderRadius: 'var(--radius-md)',
+                      cursor: 'pointer',
+                      fontSize: '0.875rem',
+                      whiteSpace: 'nowrap',
+                    }}
+                    title="Remove file"
+                    aria-label="Remove file"
+                  >
+                    ?
+                  </button>
+                )}
+              </div>
+              {file && (
+                <div style={{ 
+                  fontSize: '0.875rem', 
+                  color: 'var(--text-secondary)', 
+                  padding: '0.5rem', 
+                  backgroundColor: 'var(--bg-secondary)', 
+                  borderRadius: 'var(--radius-md)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.5rem',
+                }}>
+                  <span>??</span>
+                  <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</span>
+                  <span style={{ whiteSpace: 'nowrap' }}>({(file.size / 1024 / 1024).toFixed(2)} MB)</span>
+                </div>
+              )}
+            </div>
+            <button 
+              type="submit" 
+              disabled={loading || !file || !selectedExecutorInfo?.is_running}
+              style={{ 
+                height: 'fit-content',
+                padding: '1rem 1.5rem',
+                fontSize: '0.9375rem',
+                background: loading || !file || !selectedExecutorInfo?.is_running ? 'var(--bg-tertiary)' : 'var(--info-gradient)',
+                boxShadow: loading || !file || !selectedExecutorInfo?.is_running ? 'none' : 'var(--shadow-glow)',
+                fontWeight: 600,
+                whiteSpace: 'nowrap',
+                transition: 'all 0.2s ease',
+                cursor: loading || !file || !selectedExecutorInfo?.is_running ? 'not-allowed' : 'pointer',
+              }}
+              onMouseEnter={(e) => {
+                if (!loading && file && selectedExecutorInfo?.is_running) {
+                  e.currentTarget.style.transform = 'translateY(-1px)';
+                }
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.transform = 'none';
+              }}
+            >
+              {loading ? '?? Transcribing...' : '?? Transcribe'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </section>
+  );
+}

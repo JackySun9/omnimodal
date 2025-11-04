@@ -37,8 +37,24 @@ dependencies = [
 dev-dependencies = [
     "pytest>=8.3.2,<9.0.0",
     "pytest-asyncio>=0.23.8,<0.24.0",
+    "pytest-cov>=4.1.0,<5.0.0",
     "ruff>=0.6.0,<0.7.0",
     "httpx[cli]>=0.27.0,<0.28.0"
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+asyncio_mode = "auto"
+addopts = [
+    "--strict-markers",
+    "--strict-config",
+    "--cov=app",
+    "--cov-report=term-missing",
+    "--cov-report=html",
+    "--cov-report=xml"
 ]
 
 [tool.hatch.build.targets.wheel]

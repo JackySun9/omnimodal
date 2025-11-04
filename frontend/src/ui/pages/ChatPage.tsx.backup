@@ -1,0 +1,753 @@
+import { FormEvent, useEffect, useState, useRef } from 'react';
+import { ExecutionResponse, LocalModel } from '../../services/api';
+import { useTextModels, useExecutorStatus, useRefreshModels } from '../../hooks/useModels';
+import { useJobExecutionWithCallback } from '../../hooks/useJobExecution';
+import { useStreamingResponse } from '../../hooks/useStreamingResponse';
+import { useErrorHandler } from '../../hooks/useErrorHandler';
+import { LoadingSpinner, ModelSelectorSidebar, ErrorDisplay } from '../components';
+
+interface Message {
+  role: 'user' | 'assistant';
+  content: string;
+  thinking?: string;
+  streaming?: boolean;
+}
+
+// Format model display name (e.g., "gpt-oss:20b" -> "GPT-OSS 20B")
+function formatModelName(name: string): string {
+  if (!name) return 'Unknown Model';
+  
+  try {
+    // Split by colon to separate name and tag
+    const [modelName, tag] = name.split(':');
+    
+    // Capitalize and clean up the model name
+    const formatted = modelName
+      .split(/[-_]/)
+      .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(' ');
+    
+    // If there's a tag (like version/size), append it
+    if (tag) {
+      return `${formatted} (${tag.toUpperCase()})`;
+    }
+    
+    return formatted;
+  } catch (error) {
+    // Fallback to original name if formatting fails
+    return name;
+  }
+}
+
+export function ChatPage() {
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [input, setInput] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  
+  // Models using React Query
+  const { models, isLoading: modelsLoading, error: modelsError } = useTextModels();
+  const { data: executorStatus, isLoading: statusLoading, error: statusError } = useExecutorStatus('ollama');
+  const refreshModels = useRefreshModels();
+  const [selectedModel, setSelectedModel] = useState<LocalModel | null>(null);
+  const [showModelSelector, setShowModelSelector] = useState(false);
+  
+  const [useStreaming, setUseStreaming] = useState(true);
+  const [showThinking, setShowThinking] = useState(false);
+  const [useHistory, setUseHistory] = useState(true);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  
+  // Configuration
+  const [temperature, setTemperature] = useState(0.7);
+  const [maxTokens, setMaxTokens] = useState(2048);
+  const [systemPrompt, setSystemPrompt] = useState('You are a helpful assistant.');
+
+  // Hooks
+  const { stream } = useStreamingResponse();
+  const { handleError } = useErrorHandler('Chat');
+  const executeJobMutation = useJobExecutionWithCallback('ollama', {
+    onError: (err) => {
+      handleError(err);
+    },
+  });
+
+  // Auto-select first model when models load
+  useEffect(() => {
+    if (models.length > 0 && !selectedModel) {
+      setSelectedModel(models[0]);
+    }
+  }, [models, selectedModel]);
+
+  // Handle errors
+  useEffect(() => {
+    if (modelsError) {
+      handleError(modelsError);
+    }
+    if (statusError) {
+      handleError(statusError);
+    }
+  }, [modelsError, statusError, handleError]);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
+  // Focus input when loading completes
+  useEffect(() => {
+    if (!loading) {
+      // Small delay to ensure DOM is updated
+      setTimeout(() => {
+        inputRef.current?.focus();
+      }, 50);
+    }
+  }, [loading]);
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!input.trim() || loading || !selectedModel) return;
+
+    const userMessage: Message = { role: 'user', content: input.trim() };
+    const currentInput = input.trim();
+    
+    setMessages((prev) => [...prev, userMessage]);
+    setInput('');
+    setLoading(true);
+
+    if (useStreaming) {
+      await handleStreamingResponse(currentInput);
+    } else {
+      await handleNormalResponse(currentInput);
+    }
+  };
+
+  const parseThinkingAndContent = (text: string): { thinking: string; content: string } => {
+    const thinkMatch = text.match(/<think>([\s\S]*?)<\/think>([\s\S]*)/);
+    if (thinkMatch) {
+      return {
+        thinking: thinkMatch[1].trim(),
+        content: thinkMatch[2].trim(),
+      };
+    }
+    
+    const thinkAtEndMatch = text.match(/([\s\S]*?)<think>([\s\S]*?)<\/think>/);
+    if (thinkAtEndMatch) {
+      return {
+        thinking: thinkAtEndMatch[2].trim(),
+        content: thinkAtEndMatch[1].trim(),
+      };
+    }
+    
+    return { thinking: '', content: text };
+  };
+
+  const handleStreamingResponse = async (prompt: string) => {
+    const messageIndex = messages.length + 1;
+    setMessages((prev) => [...prev, { role: 'assistant', content: '', thinking: '', streaming: true }]);
+
+    const conversationHistory = useHistory ? messages.map(m => ({
+      role: m.role,
+      content: m.content,
+    })) : [];
+
+    const baseURL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000/api/v1';
+    
+    try {
+      await stream({
+        url: `${baseURL}/executors/ollama/stream`,
+        body: {
+          model_id: selectedModel!.id,
+          parameters: {
+            model: selectedModel!.name,
+            prompt: prompt,
+            system: systemPrompt,
+            temperature,
+            max_tokens: maxTokens,
+            history: conversationHistory,
+          },
+        },
+        onChunk: (chunk) => {
+          // Accumulate and parse thinking/content
+          setMessages((prev) => {
+            const lastMessage = prev[prev.length - 1];
+            const accumulated = (lastMessage.content || '') + chunk;
+            const { thinking, content } = parseThinkingAndContent(accumulated);
+            
+            const newMessages = [...prev];
+            newMessages[messageIndex] = {
+              role: 'assistant',
+              thinking: thinking,
+              content: content,
+              streaming: true,
+            };
+            return newMessages;
+          });
+        },
+        onThinking: (thinking) => {
+          setMessages((prev) => {
+            const newMessages = [...prev];
+            const lastMessage = newMessages[messageIndex];
+            if (lastMessage) {
+              newMessages[messageIndex] = {
+                ...lastMessage,
+                thinking: thinking,
+              };
+            }
+            return newMessages;
+          });
+        },
+        onComplete: () => {
+          setMessages((prev) => {
+            const newMessages = [...prev];
+            const lastMessage = newMessages[messageIndex];
+            if (lastMessage) {
+              newMessages[messageIndex] = {
+                ...lastMessage,
+                streaming: false,
+              };
+            }
+            return newMessages;
+          });
+          setTimeout(() => {
+            inputRef.current?.focus();
+          }, 100);
+        },
+        onError: (errorMsg) => {
+          setMessages((prev) => {
+            const newMessages = [...prev];
+            newMessages[messageIndex] = {
+              role: 'assistant',
+              content: `Error: ${errorMsg}`,
+              streaming: false,
+            };
+            return newMessages;
+          });
+        },
+      });
+    } catch (error) {
+      const errorMsg = handleError(error);
+      setMessages((prev) => {
+        const newMessages = [...prev];
+        newMessages[messageIndex] = {
+          role: 'assistant',
+          content: `Error: ${errorMsg}`,
+          streaming: false,
+        };
+        return newMessages;
+      });
+    } finally {
+      setLoading(false);
+      setTimeout(() => {
+        inputRef.current?.focus();
+      }, 100);
+    }
+  };
+
+  const handleNormalResponse = async (prompt: string) => {
+    const conversationHistory = useHistory ? messages.map(m => ({
+      role: m.role,
+      content: m.content,
+    })) : [];
+
+    try {
+      const response: ExecutionResponse = await executeJobMutation.mutateAsync({
+        model_id: selectedModel!.id,
+        parameters: {
+          model: selectedModel!.name,
+          prompt: prompt,
+          system: systemPrompt,
+          temperature,
+          max_tokens: maxTokens,
+          history: conversationHistory,
+        },
+      });
+
+      if (response.status === 'completed' && response.result) {
+        const assistantMessage: Message = {
+          role: 'assistant',
+          content: (response.result.text as string) || 'No response',
+        };
+        setMessages((prev) => [...prev, assistantMessage]);
+      } else if (response.status === 'error' && response.result) {
+        const errorMsg = response.result.error as string || 'Unknown error';
+        handleError(errorMsg);
+        const errorMessage: Message = {
+          role: 'assistant',
+          content: `Error: ${errorMsg}`,
+        };
+        setMessages((prev) => [...prev, errorMessage]);
+      }
+    } catch (error) {
+      const errorMsg = handleError(error);
+      const errorMessage: Message = {
+        role: 'assistant',
+        content: `Error: ${errorMsg}`,
+      };
+      setMessages((prev) => [...prev, errorMessage]);
+    } finally {
+      setLoading(false);
+      // Focus input after normal response
+      setTimeout(() => {
+        inputRef.current?.focus();
+      }, 100);
+    }
+  };
+
+  const clearChat = () => {
+    setMessages([]);
+  };
+
+  const switchModel = (model: LocalModel) => {
+    setSelectedModel(model);
+    setShowModelSelector(false);
+    setError(null);
+    // Optionally clear chat when switching models
+    // setMessages([]);
+  };
+
+  if (statusLoading || modelsLoading) {
+    return <LoadingSpinner message="Loading chat..." fullPage />;
+  }
+
+  if (models.length === 0) {
+    return (
+      <div className="fade-in" style={{ padding: '2rem' }}>
+        <div style={{ 
+          padding: '2rem', 
+          backgroundColor: 'var(--warning-bg)', 
+          borderRadius: 'var(--radius-lg)',
+          border: '1px solid var(--warning)',
+          textAlign: 'center',
+        }}>
+          <h3 style={{ fontSize: '3rem', marginBottom: '1rem' }}>??</h3>
+          <h3>No Text Models Found</h3>
+          <p>Please add some text generation models to start chatting.</p>
+          <button onClick={() => window.location.href = '/models'} style={{ marginTop: '1rem' }}>
+            Browse Models
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!executorStatus?.is_running) {
+    return (
+      <div className="fade-in" style={{ padding: '2rem' }}>
+        <div style={{ 
+          padding: '2rem', 
+          backgroundColor: 'var(--warning-bg)', 
+          borderRadius: 'var(--radius-lg)',
+          border: '1px solid var(--warning)',
+        }}>
+          <h3 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            ?? Ollama Not Running
+          </h3>
+          <p>Please start Ollama to use text generation.</p>
+          <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', marginTop: '0.5rem' }}>
+            Status: {executorStatus?.detail?.reason as string || 'Unknown'}
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <section className="scale-in" style={{ display: 'grid', gridTemplateColumns: showModelSelector ? '350px 1fr' : '1fr', height: '100%', gap: '1rem', padding: '1.5rem', overflow: 'hidden' }}>
+      {/* Model Selector Sidebar */}
+      {showModelSelector && (
+        <div className="glass slide-in-left" style={{ 
+          display: 'flex', 
+          flexDirection: 'column',
+          borderRadius: 'var(--radius-xl)',
+          padding: '1.5rem',
+          boxShadow: 'var(--shadow-lg)',
+          overflowY: 'auto',
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
+            <h3 style={{ margin: 0, fontSize: '1.125rem', fontWeight: 700 }}>
+              Models ({models.length})
+            </h3>
+            <button
+              onClick={() => setShowModelSelector(false)}
+              style={{
+                padding: '0.5rem',
+                background: 'var(--bg-tertiary)',
+                border: 'none',
+                cursor: 'pointer',
+                borderRadius: 'var(--radius-sm)',
+              }}
+              title="Hide model list"
+            >
+              ?
+            </button>
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+            {models.map((model) => (
+              <button
+                key={model.id}
+                onClick={() => switchModel(model)}
+                style={{
+                  padding: '0.75rem 1rem',
+                  textAlign: 'left',
+                  background: selectedModel?.id === model.id 
+                    ? 'linear-gradient(135deg, rgba(99, 102, 241, 0.15), rgba(139, 92, 246, 0.08))'
+                    : 'var(--bg-secondary)',
+                  border: selectedModel?.id === model.id 
+                    ? '2px solid var(--primary-color)'
+                    : '1px solid var(--border-color)',
+                  borderRadius: 'var(--radius-md)',
+                  cursor: 'pointer',
+                  transition: 'all 0.2s ease',
+                  boxShadow: selectedModel?.id === model.id 
+                    ? '0 2px 8px rgba(99, 102, 241, 0.2)'
+                    : '0 1px 2px rgba(0, 0, 0, 0.05)',
+                  width: '100%',
+                  minHeight: 'fit-content',
+                  color: 'var(--text-primary)',
+                  outline: 'none',
+                }}
+                onMouseEnter={(e) => {
+                  if (selectedModel?.id !== model.id) {
+                    e.currentTarget.style.background = 'var(--bg-tertiary)';
+                    e.currentTarget.style.borderColor = 'var(--primary-color)';
+                  }
+                }}
+                onMouseLeave={(e) => {
+                  if (selectedModel?.id !== model.id) {
+                    e.currentTarget.style.background = 'var(--bg-secondary)';
+                    e.currentTarget.style.borderColor = 'var(--border-color)';
+                  }
+                }}
+                title={model.name}
+              >
+                <div style={{ 
+                  fontWeight: 500, 
+                  fontSize: '0.875rem',
+                  marginBottom: model.size_bytes ? '0.25rem' : '0', 
+                  overflow: 'hidden', 
+                  textOverflow: 'ellipsis', 
+                  whiteSpace: 'nowrap',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.5rem',
+                  color: 'var(--text-primary)',
+                }}>
+                  {selectedModel?.id === model.id && (
+                    <span style={{ color: 'var(--primary-color)', fontSize: '0.875rem', fontWeight: 600 }}>?</span>
+                  )}
+                  <span style={{ 
+                    fontFamily: 'monospace', 
+                    fontSize: '0.875rem',
+                    color: 'var(--text-primary)',
+                  }}>
+                    {model.name}
+                  </span>
+                </div>
+                {model.size_bytes && (
+                  <div style={{ 
+                    fontSize: '0.75rem', 
+                    color: 'var(--text-secondary)',
+                  }}>
+                    {(model.size_bytes / (1024**3)).toFixed(1)} GB
+                  </div>
+                )}
+              </button>
+            ))}
+          </div>
+
+          <button
+            onClick={loadModels}
+            style={{
+              marginTop: '1rem',
+              padding: '0.75rem',
+              fontSize: '0.875rem',
+              background: 'var(--secondary-gradient)',
+            }}
+          >
+            Refresh Models
+          </button>
+        </div>
+      )}
+
+      {/* Main Chat Area */}
+      <div style={{ display: 'flex', flexDirection: 'column', height: '100%', gap: '1rem', minWidth: 0, overflow: 'hidden' }}>
+        {/* Header */}
+        <div className="glass" style={{ 
+          display: 'flex', 
+          justifyContent: 'space-between', 
+          alignItems: 'center', 
+          padding: '1.25rem',
+          borderRadius: 'var(--radius-xl)',
+          boxShadow: 'var(--shadow-md)',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flex: 1, minWidth: 0 }}>
+            {!showModelSelector && (
+              <button
+                onClick={() => setShowModelSelector(true)}
+                style={{
+                  padding: '0.75rem',
+                  background: 'var(--primary-gradient)',
+                  border: 'none',
+                  cursor: 'pointer',
+                  borderRadius: 'var(--radius-md)',
+                  color: 'white',
+                  fontWeight: 600,
+                  fontSize: '0.875rem',
+                  boxShadow: 'var(--shadow-md)',
+                  whiteSpace: 'nowrap',
+                }}
+                title="Show model list"
+              >
+                Models
+              </button>
+            )}
+            
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <h3 className="gradient-text" style={{ margin: 0, fontSize: '1.25rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                Chat: {selectedModel ? formatModelName(selectedModel.name) : 'Select Model'}
+              </h3>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.25rem', flexWrap: 'wrap' }}>
+                <span className={executorStatus?.healthy ? 'tag tag-success' : 'tag tag-error'} style={{ fontSize: '0.75rem' }}>
+                  {executorStatus?.healthy ? 'Online' : 'Offline'}
+                </span>
+                <span className="tag tag-primary" style={{ fontSize: '0.75rem' }}>
+                  {useStreaming ? 'Stream' : 'Normal'}
+                </span>
+                {useHistory && (
+                  <span className="tag tag-success" style={{ fontSize: '0.75rem' }}>
+                    History
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <button 
+            type="button" 
+            onClick={clearChat} 
+            disabled={loading || messages.length === 0}
+            style={{ 
+              background: 'var(--error-gradient)',
+              boxShadow: 'var(--shadow-md)',
+              padding: '0.75rem 1.25rem',
+              fontSize: '0.875rem',
+              whiteSpace: 'nowrap',
+            }} 
+          >
+            Clear
+          </button>
+        </div>
+
+        {/* Error Display */}
+        <ErrorDisplay error={error} onDismiss={() => setError(null)} />
+
+        {/* Configuration Panel */}
+        <details className="glass" style={{ 
+          padding: '1rem', 
+          borderRadius: 'var(--radius-xl)',
+          boxShadow: 'var(--shadow-md)',
+        }}>
+          <summary style={{ cursor: 'pointer', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.5rem', userSelect: 'none' }}>
+            ?? Settings
+          </summary>
+          <div style={{ marginTop: '1rem', display: 'grid', gap: '1rem' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '0.75rem' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={useStreaming}
+                  onChange={(e) => setUseStreaming(e.target.checked)}
+                />
+                <span style={{ fontSize: '0.875rem' }}>Streaming</span>
+              </label>
+
+              <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={useHistory}
+                  onChange={(e) => setUseHistory(e.target.checked)}
+                  disabled={loading}
+                />
+                <span style={{ fontSize: '0.875rem' }}>History</span>
+              </label>
+
+              <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={showThinking}
+                  onChange={(e) => setShowThinking(e.target.checked)}
+                />
+                <span style={{ fontSize: '0.875rem' }}>Thinking</span>
+              </label>
+            </div>
+
+            <label style={{ fontSize: '0.875rem' }}>
+              System Prompt:
+              <textarea
+                value={systemPrompt}
+                onChange={(e) => setSystemPrompt(e.target.value)}
+                rows={2}
+                style={{ width: '100%', marginTop: '0.25rem', fontSize: '0.875rem' }}
+              />
+            </label>
+            
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+              <label style={{ fontSize: '0.875rem' }}>
+                Temperature: {temperature.toFixed(1)}
+                <input
+                  type="range"
+                  min="0"
+                  max="2"
+                  step="0.1"
+                  value={temperature}
+                  onChange={(e) => setTemperature(parseFloat(e.target.value))}
+                  style={{ width: '100%' }}
+                />
+              </label>
+
+              <label style={{ fontSize: '0.875rem' }}>
+                Max Tokens: {maxTokens}
+                <input
+                  type="range"
+                  min="64"
+                  max="4096"
+                  step="64"
+                  value={maxTokens}
+                  onChange={(e) => setMaxTokens(parseInt(e.target.value))}
+                  style={{ width: '100%' }}
+                />
+              </label>
+            </div>
+          </div>
+        </details>
+
+        {/* Chat Messages */}
+        <div
+          className="glass"
+          style={{
+            flex: '1 1 auto',
+            overflowY: 'auto',
+            overflowX: 'hidden',
+            borderRadius: 'var(--radius-xl)',
+            padding: '1.5rem',
+            boxShadow: 'inset 0 2px 8px rgba(0, 0, 0, 0.05)',
+            minHeight: 0,
+            maxHeight: '100%',
+          }}
+        >
+          {messages.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-secondary)' }}>
+              <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>??</div>
+              <p style={{ fontSize: '1.125rem', fontWeight: 500 }}>Start a conversation</p>
+              <p style={{ fontSize: '0.875rem' }}>
+                Using: <strong>{selectedModel ? formatModelName(selectedModel.name) : ''}</strong>
+              </p>
+              <p style={{ fontSize: '0.75rem', marginTop: '0.5rem' }}>
+                Click "Models" to switch between {models.length} available models
+              </p>
+            </div>
+          ) : (
+            <>
+              {messages.map((msg, idx) => (
+                <div
+                  key={idx}
+                  className={idx === messages.length - 1 ? 'slide-in-right' : ''}
+                  style={{
+                    marginBottom: '1rem',
+                    padding: '1rem',
+                    borderRadius: 'var(--radius-lg)',
+                    background: msg.role === 'user' 
+                      ? 'linear-gradient(135deg, rgba(99, 102, 241, 0.1), rgba(139, 92, 246, 0.1))'
+                      : 'var(--bg-primary)',
+                    border: `2px solid ${msg.role === 'user' ? 'rgba(99, 102, 241, 0.3)' : 'var(--border-color)'}`,
+                    boxShadow: 'var(--shadow-sm)',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                    <span style={{ fontSize: '1.125rem' }}>
+                      {msg.role === 'user' ? '??' : '??'}
+                    </span>
+                    <strong style={{ fontSize: '0.875rem' }}>
+                      {msg.role === 'user' ? 'You' : selectedModel ? formatModelName(selectedModel.name) : 'Assistant'}
+                    </strong>
+                    {msg.streaming && (
+                      <div className="typing-indicator">
+                        <span></span>
+                        <span></span>
+                        <span></span>
+                      </div>
+                    )}
+                  </div>
+                  
+                  {msg.thinking && showThinking && (
+                    <details style={{ 
+                      marginBottom: '0.75rem',
+                      padding: '0.75rem',
+                      backgroundColor: 'var(--info-bg)',
+                      borderRadius: 'var(--radius-sm)',
+                      fontSize: '0.8125rem',
+                    }}>
+                      <summary style={{ cursor: 'pointer', fontWeight: 600, userSelect: 'none' }}>
+                        Thinking
+                      </summary>
+                      <p style={{ marginTop: '0.5rem', whiteSpace: 'pre-wrap', fontStyle: 'italic', color: 'var(--text-secondary)' }}>
+                        {msg.thinking}
+                      </p>
+                    </details>
+                  )}
+                  
+                  <p style={{ whiteSpace: 'pre-wrap', lineHeight: '1.6', fontSize: '0.9375rem' }}>
+                    {msg.content || (msg.streaming && '...')}
+                  </p>
+                </div>
+              ))}
+              <div ref={messagesEndRef} />
+            </>
+          )}
+        </div>
+
+        {/* Input Form */}
+        <form onSubmit={handleSubmit} style={{ display: 'flex', gap: '0.75rem', alignItems: 'flex-end' }}>
+          <textarea
+            ref={inputRef}
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                handleSubmit(e as any);
+              }
+            }}
+            placeholder="Type your message... (Shift+Enter for new line)"
+            disabled={loading}
+            rows={3}
+            style={{ 
+              flex: 1,
+              padding: '0.75rem',
+              borderRadius: 'var(--radius-md)',
+              border: '2px solid var(--border-color)',
+              resize: 'vertical',
+              fontSize: '0.9375rem',
+            }}
+          />
+          <button 
+            type="submit" 
+            disabled={loading || !input.trim()}
+            style={{ 
+              height: 'fit-content',
+              padding: '1rem 1.5rem',
+              fontSize: '0.9375rem',
+              background: loading ? 'var(--bg-tertiary)' : 'var(--primary-gradient)',
+              boxShadow: loading ? 'none' : 'var(--shadow-glow)',
+              fontWeight: 600,
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {loading ? '...' : '?? Send'}
+          </button>
+        </form>
+      </div>
+    </section>
+  );
+}
