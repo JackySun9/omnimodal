@@ -1,8 +1,105 @@
-import axios from 'axios';
+import axios, { AxiosError, AxiosRequestConfig } from 'axios';
 
+// Create axios instance with retry logic
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000/api/v1'
 });
+
+/**
+ * Retry configuration for API requests
+ */
+interface RetryConfig {
+  maxRetries: number;
+  retryDelay: number;
+  retryableStatusCodes: number[];
+}
+
+const defaultRetryConfig: RetryConfig = {
+  maxRetries: 3,
+  retryDelay: 1000, // 1 second
+  retryableStatusCodes: [408, 429, 500, 502, 503, 504], // Timeout, Rate limit, Server errors
+};
+
+/**
+ * Calculate delay with exponential backoff and jitter
+ */
+function calculateRetryDelay(attempt: number, baseDelay: number): number {
+  const exponentialDelay = baseDelay * Math.pow(2, attempt - 1);
+  const jitter = Math.random() * 0.3 * exponentialDelay; // Add 0-30% jitter
+  return Math.min(exponentialDelay + jitter, 30000); // Cap at 30 seconds
+}
+
+/**
+ * Determine if an error should trigger a retry
+ */
+function shouldRetry(error: AxiosError, config: RetryConfig): boolean {
+  if (!error.response) {
+    // Network errors (no response) should be retried
+    return true;
+  }
+  
+  // Retry on specific status codes
+  return config.retryableStatusCodes.includes(error.response.status);
+}
+
+/**
+ * Retry interceptor for axios requests
+ */
+api.interceptors.response.use(
+  (response) => response,
+  async (error: AxiosError) => {
+    const config = error.config as AxiosRequestConfig & { 
+      _retryCount?: number;
+      _retryConfig?: Partial<RetryConfig>;
+    };
+    
+    if (!config) {
+      return Promise.reject(error);
+    }
+
+    // Merge with custom retry config if provided
+    const retryConfig = { ...defaultRetryConfig, ...config._retryConfig };
+    
+    // Initialize retry count
+    config._retryCount = config._retryCount || 0;
+    
+    // Check if we should retry
+    if (config._retryCount >= retryConfig.maxRetries || !shouldRetry(error, retryConfig)) {
+      return Promise.reject(error);
+    }
+    
+    // Increment retry count
+    config._retryCount += 1;
+    
+    // Calculate delay with exponential backoff
+    const delay = calculateRetryDelay(config._retryCount, retryConfig.retryDelay);
+    
+    console.log(
+      `Retrying request (attempt ${config._retryCount}/${retryConfig.maxRetries}) after ${delay}ms:`,
+      config.url
+    );
+    
+    // Wait before retrying
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    
+    // Retry the request
+    return api(config);
+  }
+);
+
+/**
+ * Request interceptor to log requests (optional, useful for debugging)
+ */
+api.interceptors.request.use(
+  (config) => {
+    console.debug(`API Request: ${config.method?.toUpperCase()} ${config.url}`);
+    return config;
+  },
+  (error) => {
+    console.error('API Request Error:', error);
+    return Promise.reject(error);
+  }
+);
 
 export interface HardwareProfile {
   gpu?: {

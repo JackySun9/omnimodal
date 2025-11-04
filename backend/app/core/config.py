@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     DB_URL: str = "sqlite+aiosqlite:///./data.db"
     REDIS_URL: str = "redis://localhost:6379/0"
     HUGGINGFACE_TOKEN: str | None = None
+    DEBUG: bool = False
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

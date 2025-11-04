@@ -31,6 +31,7 @@ export class ErrorHandler {
         const data = error.response.data;
         
         if (typeof data === 'object' && data !== null) {
+          // Check for various error message fields
           if ('detail' in data && typeof data.detail === 'string') {
             return data.detail;
           }
@@ -39,6 +40,13 @@ export class ErrorHandler {
           }
           if ('message' in data && typeof data.message === 'string') {
             return data.message;
+          }
+          // Check for validation errors (FastAPI format)
+          if ('detail' in data && Array.isArray(data.detail)) {
+            const validationErrors = data.detail
+              .map((err: any) => `${err.loc?.join('.')}: ${err.msg}`)
+              .join(', ');
+            return `Validation error: ${validationErrors}`;
           }
         }
         
@@ -52,16 +60,30 @@ export class ErrorHandler {
             return 'Access forbidden.';
           case 404:
             return 'Resource not found.';
+          case 408:
+            return 'Request timeout. Please try again.';
+          case 429:
+            return 'Too many requests. Please wait a moment.';
           case 500:
             return 'Server error. Please try again later.';
+          case 502:
+            return 'Bad gateway. The service may be temporarily unavailable.';
           case 503:
-            return 'Service temporarily unavailable.';
+            return 'Service temporarily unavailable. Please try again later.';
+          case 504:
+            return 'Gateway timeout. The request took too long.';
           default:
             return `Request failed with status ${status}`;
         }
       } else if (error.request) {
         // Request made but no response received
-        return 'Network error. Please check your connection.';
+        if (error.code === 'ECONNABORTED') {
+          return 'Request timeout. Please check your connection and try again.';
+        }
+        if (error.code === 'ERR_NETWORK') {
+          return 'Network error. Please check your internet connection.';
+        }
+        return 'Network error. Unable to reach the server.';
       }
     }
     
@@ -108,6 +130,20 @@ export class ErrorHandler {
   }
   
   /**
+   * Display warning message
+   */
+  static showWarning(message: string): void {
+    toast(message, {
+      icon: '⚠️',
+      duration: 4000,
+      style: {
+        background: '#fef3c7',
+        color: '#92400e',
+      },
+    });
+  }
+  
+  /**
    * Display loading toast and return toast ID
    */
   static showLoading(message: string): string {
@@ -147,5 +183,31 @@ export class ErrorHandler {
    */
   static dismissAll(): void {
     toast.dismiss();
+  }
+  
+  /**
+   * Log error to console in development mode
+   */
+  static logError(error: unknown, context?: string): void {
+    if (process.env.NODE_ENV === 'development') {
+      console.group(`Error ${context ? `in ${context}` : ''}`);
+      console.error(error);
+      if (error instanceof Error && error.stack) {
+        console.error('Stack trace:', error.stack);
+      }
+      console.groupEnd();
+    }
+  }
+  
+  /**
+   * Create a user-friendly error message with retry suggestion
+   * Note: For retry functionality, use showRetryToast from @/ui/components/RetryToast
+   */
+  static createRetryMessage(baseMessage: string, retryAction?: () => void): void {
+    toast.error(baseMessage, { duration: 6000 });
+    
+    // Note: To show a retry button, import and use:
+    // import { showRetryToast } from '@/ui/components/RetryToast';
+    // showRetryToast(message, () => retryAction());
   }
 }

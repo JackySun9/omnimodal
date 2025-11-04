@@ -290,7 +290,7 @@ export function ImagePage() {
           border: '1px solid var(--warning)',
           textAlign: 'center',
         }}>
-          <h3 style={{ fontSize: '3rem', marginBottom: '1rem' }}>⚠️</h3>
+          <h3 style={{ fontSize: '3rem', marginBottom: '1rem' }}>??</h3>
           <h3>No Image Models Found</h3>
           <p style={{ marginBottom: '1.5rem', color: 'var(--text-secondary)' }}>Please add some image generation models to start creating.</p>
           <button 
@@ -319,7 +319,7 @@ export function ImagePage() {
           border: '1px solid var(--warning)',
         }}>
           <h3 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
-            ⚠️ OllamaDiffuser Not Running
+            ?? OllamaDiffuser Not Running
           </h3>
           <p style={{ marginBottom: '1rem' }}>Please start OllamaDiffuser to use image generation.</p>
           {initMessage && (
@@ -357,7 +357,7 @@ export function ImagePage() {
               boxShadow: 'var(--shadow-md)',
             }}
           >
-            {initializing ? '⏳ Starting...' : '🚀 Start Service'}
+            {initializing ? '? Starting...' : '?? Start Service'}
           </button>
         </div>
       </div>
@@ -492,7 +492,7 @@ export function ImagePage() {
               boxShadow: 'var(--shadow-md)',
             }}
           >
-            {modelsLoading ? '⏳ Refreshing...' : '🔄 Refresh Models'}
+            {modelsLoading ? '? Refreshing...' : '?? Refresh Models'}
           </button>
         </div>
       )}
@@ -544,14 +544,14 @@ export function ImagePage() {
             
             <div style={{ flex: 1, minWidth: 0 }}>
               <h3 className="gradient-text" style={{ margin: 0, fontSize: '1.25rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                🖼️ Image Generation: {selectedModel ? formatModelName(selectedModel.name) : 'Select Model'}
+                ??? Image Generation: {selectedModel ? formatModelName(selectedModel.name) : 'Select Model'}
               </h3>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.25rem', flexWrap: 'wrap' }}>
                 <span className={executorStatus.healthy ? 'tag tag-success' : 'tag tag-error'} style={{ fontSize: '0.75rem' }}>
                   {executorStatus.healthy ? '✅ Online' : '❌ Offline'}
                 </span>
                 {selectedLoRA && <span className="tag tag-primary" style={{ fontSize: '0.75rem' }}>✨ {selectedLoRA}</span>}
-                {useControlNet && controlImage && <span className="tag tag-warning" style={{ fontSize: '0.75rem' }}>🎯 ControlNet</span>}
+                {useControlNet && controlImage && <span className="tag tag-warning" style={{ fontSize: '0.75rem' }}>?? ControlNet</span>}
                 {generatedImages.length > 0 && (
                   <span className="tag" style={{ fontSize: '0.75rem' }}>
                     {generatedImages.length} image{generatedImages.length !== 1 ? 's' : ''}
@@ -620,7 +620,7 @@ export function ImagePage() {
             gap: '1rem',
           }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flex: 1 }}>
-              <span style={{ fontSize: '1.25rem' }}>🎨</span>
+              <span style={{ fontSize: '1.25rem' }}>??</span>
               <span style={{ fontSize: '0.875rem' }}>{error}</span>
             </div>
             <button
@@ -648,7 +648,7 @@ export function ImagePage() {
           boxShadow: 'var(--shadow-md)',
         }}>
           <summary style={{ cursor: 'pointer', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.5rem', userSelect: 'none' }}>
-            ⚙️ Settings
+            ?? Settings
           </summary>
           <div style={{ marginTop: '1rem', display: 'grid', gap: '1rem' }}>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem' }}>
@@ -796,7 +796,7 @@ export function ImagePage() {
 
             {/* ControlNet Section */}
             <details style={{ marginTop: '0.5rem' }}>
-              <summary style={{ cursor: 'pointer', fontWeight: 600, userSelect: 'none', padding: '0.5rem 0' }}>🎯 ControlNet (Guided Generation)</summary>
+              <summary style={{ cursor: 'pointer', fontWeight: 600, userSelect: 'none', padding: '0.5rem 0' }}>?? ControlNet (Guided Generation)</summary>
               <div style={{ marginTop: '1rem', display: 'grid', gap: '1rem', padding: '0.75rem', backgroundColor: 'var(--bg-secondary)', borderRadius: 'var(--radius-md)' }}>
                 <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.875rem' }}>
                   <input
@@ -914,7 +914,7 @@ export function ImagePage() {
           
           {!loading && generatedImages.length === 0 && (
             <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-secondary)' }}>
-              <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>🎨</div>
+              <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>??</div>
               <p style={{ fontSize: '1.125rem', fontWeight: 500 }}>Start generating images</p>
               <p style={{ fontSize: '0.875rem', marginTop: '0.5rem' }}>
                 Using: <strong>{selectedModel ? formatModelName(selectedModel.name) : ''}</strong>
@@ -992,7 +992,7 @@ export function ImagePage() {
                         title="Download image"
                         aria-label="Download image"
                       >
-                        📥
+                        ??
                       </button>
                       <button
                         onClick={(e) => {
@@ -1012,7 +1012,7 @@ export function ImagePage() {
                         title="Delete image"
                         aria-label="Delete image"
                       >
-                        🗑️
+                        ???
                       </button>
                     </div>
                   </div>
@@ -1035,7 +1035,7 @@ export function ImagePage() {
                             </html>
                           `);
                         }
-                      }}>🔍 Enlarge</span>
+                      }}>?? Enlarge</span>
                     </div>
                   </div>
                 </div>

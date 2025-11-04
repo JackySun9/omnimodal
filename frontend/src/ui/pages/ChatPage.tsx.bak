@@ -319,7 +319,7 @@ export function ChatPage() {
           border: '1px solid var(--warning)',
           textAlign: 'center',
         }}>
-          <h3 style={{ fontSize: '3rem', marginBottom: '1rem' }}>⚠️</h3>
+          <h3 style={{ fontSize: '3rem', marginBottom: '1rem' }}>??</h3>
           <h3>No Text Models Found</h3>
           <p>Please add some text generation models to start chatting.</p>
           <button onClick={() => window.location.href = '/models'} style={{ marginTop: '1rem' }}>
@@ -340,7 +340,7 @@ export function ChatPage() {
           border: '1px solid var(--warning)',
         }}>
           <h3 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            ⚠️ Ollama Not Running
+            ?? Ollama Not Running
           </h3>
           <p>Please start Ollama to use text generation.</p>
           <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', marginTop: '0.5rem' }}>
@@ -549,7 +549,7 @@ export function ChatPage() {
           boxShadow: 'var(--shadow-md)',
         }}>
           <summary style={{ cursor: 'pointer', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.5rem', userSelect: 'none' }}>
-            ⚙️ Settings
+            ?? Settings
           </summary>
           <div style={{ marginTop: '1rem', display: 'grid', gap: '1rem' }}>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '0.75rem' }}>
@@ -638,7 +638,7 @@ export function ChatPage() {
         >
           {messages.length === 0 ? (
             <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-secondary)' }}>
-              <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>💬</div>
+              <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>??</div>
               <p style={{ fontSize: '1.125rem', fontWeight: 500 }}>Start a conversation</p>
               <p style={{ fontSize: '0.875rem' }}>
                 Using: <strong>{selectedModel ? formatModelName(selectedModel.name) : ''}</strong>
@@ -666,7 +666,7 @@ export function ChatPage() {
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
                     <span style={{ fontSize: '1.125rem' }}>
-                      {msg.role === 'user' ? '👤' : '🤖'}
+                      {msg.role === 'user' ? '??' : '??'}
                     </span>
                     <strong style={{ fontSize: '0.875rem' }}>
                       {msg.role === 'user' ? 'You' : selectedModel ? formatModelName(selectedModel.name) : 'Assistant'}
@@ -744,7 +744,7 @@ export function ChatPage() {
               whiteSpace: 'nowrap',
             }}
           >
-            {loading ? '⏳' : '📤 Send'}
+            {loading ? '?' : '?? Send'}
           </button>
         </form>
       </div>

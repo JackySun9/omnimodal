@@ -2,11 +2,16 @@ from __future__ import annotations
 
 from typing import Dict, Optional
 from uuid import UUID, uuid4
+import httpx
+
+from loguru import logger
 
 import app.executors  # noqa: F401
 from app.executors.base import BaseExecutor
 from app.executors.registry import registry
 from app.schemas.executors import ExecutionRequest, ExecutionResponse, ExecutorStatusResponse
+from app.core.exceptions import ExecutorError, NotFoundError, ExternalServiceError
+from app.utils.retry import retry_async, RetryConfig
 
 
 class ExecutorService:
@@ -17,36 +22,60 @@ class ExecutorService:
         self._tasks: dict[UUID, ExecutionResponse] = {}
 
     def _get_executor(self, executor_name: str) -> Optional[BaseExecutor]:
+        """Get or create an executor instance."""
         # Use global shared instances to persist loaded models across API requests
         if executor_name in self._global_instances:
             return self._global_instances[executor_name]
         executor_cls = self._registry.get(executor_name)
         if executor_cls is None:
+            logger.warning(f"Executor not found in registry: {executor_name}")
             return None
-        instance = executor_cls()
-        self._global_instances[executor_name] = instance
-        return instance
+        try:
+            instance = executor_cls()
+            self._global_instances[executor_name] = instance
+            logger.info(f"Created new executor instance: {executor_name}")
+            return instance
+        except Exception as e:
+            logger.exception(f"Failed to create executor instance for {executor_name}: {e}")
+            raise ExecutorError(
+                f"Failed to initialize executor '{executor_name}': {str(e)}",
+                details={"executor_name": executor_name}
+            )
 
     async def get_status(self, executor_name: str) -> Optional[ExecutorStatusResponse]:
+        """Get executor status."""
         executor = self._get_executor(executor_name)
         if executor is None:
             return None
-        status = await executor.get_status()
-        return ExecutorStatusResponse(executor=status)
+        try:
+            status = await executor.get_status()
+            return ExecutorStatusResponse(executor=status)
+        except Exception as e:
+            logger.exception(f"Error getting status for executor {executor_name}: {e}")
+            raise ExecutorError(
+                f"Failed to get executor status: {str(e)}",
+                details={"executor_name": executor_name}
+            )
 
     async def execute(self, executor_name: str, payload: ExecutionRequest) -> ExecutionResponse:
+        """Execute a task on an executor."""
         executor = self._get_executor(executor_name)
         if executor is None:
-            raise ValueError(f"Executor '{executor_name}' is not registered")
+            raise NotFoundError(
+                f"Executor '{executor_name}' not found",
+                details={"executor_name": executor_name}
+            )
         
         # Execute immediately and return result
         try:
+            logger.debug(f"Executing task on {executor_name}")
             response = await executor.execute(payload)
             # Store in tasks for potential later retrieval
             if response.task_id:
                 self._tasks[response.task_id] = response
             return response
         except Exception as e:
+            logger.exception(f"Execution failed on {executor_name}: {e}")
             # Return error response
             task_id = uuid4()
             error_response = ExecutionResponse(
@@ -142,54 +171,80 @@ class ExecutorService:
             raise ValueError(f"Start operation not supported for executor '{executor_name}'")
     
     async def load_model(self, executor_name: str, model_name: str):
-        """Load a model into the executor."""
+        """Load a model into the executor with retry logic."""
         executor = self._get_executor(executor_name)
         if executor is None:
-            raise ValueError(f"Executor '{executor_name}' is not registered")
+            raise NotFoundError(
+                f"Executor '{executor_name}' not found",
+                details={"executor_name": executor_name}
+            )
         
         if executor_name == "ollama-diffuser":
-            # Use the executor's client to load the model
-            import httpx
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                try:
-                    # OllamaDiffuser expects "model_name"
-                    print(f"[DEBUG] Loading model '{model_name}' into ollama-diffuser...")
+            # Use retry logic for external service calls
+            async def _load_model_with_http():
+                async with httpx.AsyncClient(timeout=120.0) as client:
+                    logger.info(f"Loading model '{model_name}' into ollama-diffuser...")
                     response = await client.post(
                         "http://localhost:11435/api/models/load",
                         json={"model_name": model_name},
                     )
                     response.raise_for_status()
                     data = response.json()
-                    print(f"[DEBUG] Model loaded successfully: {data}")
+                    logger.info(f"Model loaded successfully: {data}")
                     return {
                         "status": "loaded",
                         "model": model_name,
                         "info": data,
                     }
-                except httpx.HTTPStatusError as e:
-                    error_detail = e.response.text if hasattr(e, 'response') else str(e)
-                    print(f"[ERROR] HTTP error loading model: {e.response.status_code} - {error_detail}")
-                    
-                    # Provide helpful error message for common issues
-                    if e.response.status_code == 400:
-                        raise RuntimeError(
-                            f"Model '{model_name}' failed to load. "
-                            f"Possible causes:\n"
-                            f"1. Model is corrupted or not fully downloaded (check 'ollamadiffuser list')\n"
-                            f"2. Model name mismatch\n"
-                            f"3. Insufficient VRAM\n"
-                            f"Try: ollamadiffuser pull {model_name}"
-                        )
-                    raise RuntimeError(f"Failed to load model (HTTP {e.response.status_code}): {error_detail}")
-                except httpx.ConnectError as e:
-                    print(f"[ERROR] Connection error: {str(e)}")
-                    raise RuntimeError(f"Cannot connect to OllamaDiffuser at localhost:11435. Is the service running?")
-                except httpx.TimeoutException as e:
-                    print(f"[ERROR] Timeout loading model: {str(e)}")
-                    raise RuntimeError(f"Model loading timed out. Large models may take several minutes to load.")
-                except Exception as e:
-                    print(f"[ERROR] Unexpected error loading model: {str(e)}")
-                    raise RuntimeError(f"Failed to load model: {str(e)}")
+            
+            try:
+                # Retry on connection errors and timeouts
+                return await retry_async(
+                    _load_model_with_http,
+                    config=RetryConfig(max_attempts=3, initial_delay=2.0),
+                    retryable_exceptions=(httpx.ConnectError, httpx.TimeoutException),
+                )
+            except httpx.HTTPStatusError as e:
+                error_detail = e.response.text if hasattr(e, 'response') else str(e)
+                logger.error(f"HTTP error loading model: {e.response.status_code} - {error_detail}")
+                
+                # Provide helpful error message for common issues
+                if e.response.status_code == 400:
+                    raise ExternalServiceError(
+                        f"Model '{model_name}' failed to load. "
+                        f"Possible causes:\n"
+                        f"1. Model is corrupted or not fully downloaded (check 'ollamadiffuser list')\n"
+                        f"2. Model name mismatch\n"
+                        f"3. Insufficient VRAM\n"
+                        f"Try: ollamadiffuser pull {model_name}",
+                        service_name="ollama-diffuser",
+                        details={"model_name": model_name, "status_code": e.response.status_code}
+                    )
+                raise ExternalServiceError(
+                    f"Failed to load model (HTTP {e.response.status_code}): {error_detail}",
+                    service_name="ollama-diffuser",
+                    details={"model_name": model_name, "status_code": e.response.status_code}
+                )
+            except httpx.ConnectError as e:
+                logger.error(f"Connection error: {str(e)}")
+                raise ExternalServiceError(
+                    "Cannot connect to OllamaDiffuser at localhost:11435. Is the service running?",
+                    service_name="ollama-diffuser",
+                    details={"model_name": model_name}
+                )
+            except httpx.TimeoutException as e:
+                logger.error(f"Timeout loading model: {str(e)}")
+                raise ExternalServiceError(
+                    "Model loading timed out after retries. Large models may take several minutes to load.",
+                    service_name="ollama-diffuser",
+                    details={"model_name": model_name}
+                )
+            except Exception as e:
+                logger.exception(f"Unexpected error loading model: {str(e)}")
+                raise ExecutorError(
+                    f"Failed to load model: {str(e)}",
+                    details={"executor_name": executor_name, "model_name": model_name}
+                )
         else:
             # For other executors, use the load_model method if available
             if hasattr(executor, 'load_model'):
