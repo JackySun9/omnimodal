@@ -4,10 +4,25 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688.svg)](https://fastapi.tiangolo.com)
 [![Tauri](https://img.shields.io/badge/Tauri-2.0-FFC131.svg)](https://tauri.app)
 [![React](https://img.shields.io/badge/React-18-61DAFB.svg)](https://react.dev)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.6-3178C6.svg)](https://www.typescriptlang.org/)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+[![Maintenance](https://img.shields.io/badge/Maintained%3F-yes-green.svg)](https://github.com/yourusername/unified-multimodal-platform/graphs/commit-activity)
+[![GitHub Issues](https://img.shields.io/github/issues/yourusername/unified-multimodal-platform.svg)](https://github.com/yourusername/unified-multimodal-platform/issues)
+[![GitHub Stars](https://img.shields.io/github/stars/yourusername/unified-multimodal-platform.svg)](https://github.com/yourusername/unified-multimodal-platform/stargazers)
 
 ## 🎯 Overview
 
 A comprehensive, hardware-aware desktop application for discovering, downloading, managing, and interacting with multimodal AI models. This platform solves the fragmentation in local AI tooling by providing a **unified interface** for text generation (LLMs), image generation, speech-to-text, text-to-speech, and video generation models.
+
+> **📸 Screenshots and Demo Coming Soon!**  
+> We're preparing visual demonstrations of the platform in action. Check back soon for screenshots and animated GIFs showing:
+> - Dashboard with hardware detection
+> - Model discovery and download interface
+> - Text generation workspace
+> - Image generation with real-time preview
+> - Speech-to-text transcription demo
 
 ### Key Features
 
@@ -338,16 +353,31 @@ pnpm build                     # Build production app
 
 ## 🤝 Contributing
 
-Contributions are welcome! Areas of interest:
+Contributions are welcome! Please read our [Contributing Guidelines](CONTRIBUTING.md) for details on our code of conduct and the process for submitting pull requests.
+
+**Areas of interest:**
 - Additional executor integrations (Coqui TTS, AnimateDiff, etc.)
 - UI/UX improvements
 - Testing coverage
 - Documentation
 - Performance optimizations
+- Bug fixes and issue reports
+
+**Quick Start for Contributors:**
+
+1. Fork the repository
+2. Create your feature branch: `git checkout -b feature/amazing-feature`
+3. Commit your changes: `git commit -m 'feat: add amazing feature'`
+4. Push to the branch: `git push origin feature/amazing-feature`
+5. Open a Pull Request
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.
 
 ## 📄 License
 
-[MIT License](./LICENSE)
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+**TL;DR:** You can use, modify, and distribute this software freely, even for commercial purposes, as long as you include the original license and copyright notice.
 
 ## 🙏 Acknowledgments
 
