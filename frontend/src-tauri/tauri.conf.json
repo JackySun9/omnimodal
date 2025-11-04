@@ -1,0 +1,24 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Unified Multimodal Platform",
+  "version": "0.1.0",
+  "identifier": "com.unimodal.platform",
+  "build": {
+    "beforeDevCommand": "pnpm vite",
+    "beforeBuildCommand": "pnpm vite build",
+    "devUrl": "http://localhost:1420",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Unified Multimodal Platform",
+        "width": 1280,
+        "height": 800
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  }
+}
