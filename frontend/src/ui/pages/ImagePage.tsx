@@ -51,7 +51,12 @@ export function ImagePage() {
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   
   // Models using React Query
-  const { models, isLoading: modelsLoading, error: modelsError } = useImageModels();
+  const { models: allImageModels, isLoading: modelsLoading, error: modelsError } = useImageModels();
+  // Filter to only show OllamaDiffuser models (not HuggingFace models which won't work)
+  const models = allImageModels.filter(m => {
+    const metadata = m.model_metadata as Record<string, any> || {};
+    return metadata.source === 'ollamadiffuser';
+  });
   const { data: executorStatus, isLoading: statusLoading, error: statusError } = useExecutorStatus('ollama-diffuser');
   const refreshModels = useRefreshModels();
   const [selectedModel, setSelectedModel] = useState<LocalModel | null>(null);
@@ -90,20 +95,32 @@ export function ImagePage() {
   const imagesEndRef = useRef<HTMLDivElement>(null);
   const promptRef = useRef<HTMLTextAreaElement>(null);
 
-  // Auto-select first model when models load
+  // Auto-select flux-schnell as default, or first available model (but don't auto-initialize)
   useEffect(() => {
     if (models.length > 0 && !selectedModel) {
-      setSelectedModel(models[0]);
+      // Prioritize flux-schnell as the default model (handles both flux-schnell and flux.1-schnell)
+      const fluxSchnell = models.find(m => {
+        const name = m.name.toLowerCase();
+        return name.includes('schnell') && name.includes('flux');
+      });
+      
+      if (fluxSchnell) {
+        setSelectedModel(fluxSchnell);
+      } else {
+        // Find first model that's not a helper model (not lora, vae, text_encoder, etc.)
+        const mainModel = models.find(m => {
+          const name = m.name.toLowerCase();
+          return !name.includes('lora') && 
+                 !name.includes('vae') && 
+                 !name.includes('text_encoder') &&
+                 !name.includes('backup') &&
+                 !name.includes('controlnet') &&
+                 !name.includes('annotator');
+        });
+        setSelectedModel(mainModel || models[0]);
+      }
     }
   }, [models, selectedModel]);
-
-  // Initialize model when selected
-  useEffect(() => {
-    if (selectedModel) {
-      initialize();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedModel]);
 
   useEffect(() => {
     if (generatedImages.length > 0) {
@@ -262,6 +279,7 @@ export function ImagePage() {
     setSelectedModel(model);
     setShowModelSelector(false);
     setError(null);
+    // Don't auto-initialize - let user click "Load Model" button explicitly
   };
 
   const downloadImage = (image: GeneratedImage) => {
@@ -290,7 +308,7 @@ export function ImagePage() {
           border: '1px solid var(--warning)',
           textAlign: 'center',
         }}>
-          <h3 style={{ fontSize: '3rem', marginBottom: '1rem' }}>⚠️</h3>
+          <h3 style={{ fontSize: '3rem', marginBottom: '1rem' }}>??</h3>
           <h3>No Image Models Found</h3>
           <p style={{ marginBottom: '1.5rem', color: 'var(--text-secondary)' }}>Please add some image generation models to start creating.</p>
           <button 
@@ -319,7 +337,7 @@ export function ImagePage() {
           border: '1px solid var(--warning)',
         }}>
           <h3 style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
-            ⚠️ OllamaDiffuser Not Running
+            ?? OllamaDiffuser Not Running
           </h3>
           <p style={{ marginBottom: '1rem' }}>Please start OllamaDiffuser to use image generation.</p>
           {initMessage && (
@@ -357,7 +375,7 @@ export function ImagePage() {
               boxShadow: 'var(--shadow-md)',
             }}
           >
-            {initializing ? '⏳ Starting...' : '🚀 Start Service'}
+            {initializing ? '? Starting...' : '?? Start Service'}
           </button>
         </div>
       </div>
@@ -407,78 +425,93 @@ export function ImagePage() {
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', flex: 1, overflowY: 'auto' }}>
-            {models.map((model) => (
-              <button
-                key={model.id}
-                onClick={() => switchModel(model)}
-                style={{
-                  padding: '0.75rem 1rem',
-                  textAlign: 'left',
-                  background: selectedModel?.id === model.id 
-                    ? 'linear-gradient(135deg, rgba(236, 72, 153, 0.15), rgba(236, 72, 153, 0.08))'
-                    : 'var(--bg-secondary)',
-                  border: selectedModel?.id === model.id 
-                    ? '2px solid var(--secondary-color)'
-                    : '1px solid var(--border-color)',
-                  borderRadius: 'var(--radius-md)',
-                  cursor: 'pointer',
-                  transition: 'all 0.2s ease',
-                  boxShadow: selectedModel?.id === model.id 
-                    ? '0 2px 8px rgba(236, 72, 153, 0.2)'
-                    : '0 1px 2px rgba(0, 0, 0, 0.05)',
-                  width: '100%',
-                  minHeight: 'fit-content',
-                  color: 'var(--text-primary)',
-                  outline: 'none',
-                }}
-                onMouseEnter={(e) => {
-                  if (selectedModel?.id !== model.id) {
-                    e.currentTarget.style.background = 'var(--bg-tertiary)';
-                    e.currentTarget.style.borderColor = 'var(--secondary-color)';
-                  }
-                }}
-                onMouseLeave={(e) => {
-                  if (selectedModel?.id !== model.id) {
-                    e.currentTarget.style.background = 'var(--bg-secondary)';
-                    e.currentTarget.style.borderColor = 'var(--border-color)';
-                  }
-                }}
-                title={model.name}
-                aria-label={`Select model ${model.name}`}
-              >
-                <div style={{ 
-                  fontWeight: 500, 
-                  fontSize: '0.875rem',
-                  marginBottom: model.size_bytes ? '0.25rem' : '0', 
-                  overflow: 'hidden', 
-                  textOverflow: 'ellipsis', 
-                  whiteSpace: 'nowrap',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '0.5rem',
-                  color: 'var(--text-primary)',
-                }}>
-                  {selectedModel?.id === model.id && (
-                    <span style={{ color: 'var(--secondary-color)', fontSize: '0.875rem', fontWeight: 600 }}>?</span>
-                  )}
-                  <span style={{ 
-                    fontFamily: 'monospace', 
+            {models.map((model) => {
+              const isSelected = selectedModel?.id === model.id;
+              const isLoaded = isSelected && executorStatus?.detail?.model_loaded;
+              
+              return (
+                <button
+                  key={model.id}
+                  onClick={() => switchModel(model)}
+                  disabled={initializing}
+                  style={{
+                    padding: '0.75rem 1rem',
+                    textAlign: 'left',
+                    background: isSelected 
+                      ? isLoaded
+                        ? 'linear-gradient(135deg, rgba(16, 185, 129, 0.15), rgba(16, 185, 129, 0.08))'
+                        : 'linear-gradient(135deg, rgba(236, 72, 153, 0.15), rgba(236, 72, 153, 0.08))'
+                      : 'var(--bg-secondary)',
+                    border: isSelected 
+                      ? isLoaded
+                        ? '2px solid var(--success)'
+                        : '2px solid var(--secondary-color)'
+                      : '1px solid var(--border-color)',
+                    borderRadius: 'var(--radius-md)',
+                    cursor: initializing ? 'not-allowed' : 'pointer',
+                    transition: 'all 0.2s ease',
+                    boxShadow: isSelected 
+                      ? isLoaded
+                        ? '0 2px 8px rgba(16, 185, 129, 0.2)'
+                        : '0 2px 8px rgba(236, 72, 153, 0.2)'
+                      : '0 1px 2px rgba(0, 0, 0, 0.05)',
+                    width: '100%',
+                    minHeight: 'fit-content',
+                    color: 'var(--text-primary)',
+                    outline: 'none',
+                    opacity: initializing ? 0.6 : 1,
+                  }}
+                  onMouseEnter={(e) => {
+                    if (!isSelected && !initializing) {
+                      e.currentTarget.style.background = 'var(--bg-tertiary)';
+                      e.currentTarget.style.borderColor = 'var(--secondary-color)';
+                    }
+                  }}
+                  onMouseLeave={(e) => {
+                    if (!isSelected) {
+                      e.currentTarget.style.background = 'var(--bg-secondary)';
+                      e.currentTarget.style.borderColor = 'var(--border-color)';
+                    }
+                  }}
+                  title={isLoaded ? `${model.name} (Loaded in OllamaDiffuser)` : model.name}
+                  aria-label={`Select model ${model.name}`}
+                >
+                  <div style={{ 
+                    fontWeight: 500, 
                     fontSize: '0.875rem',
+                    marginBottom: model.size_bytes ? '0.25rem' : '0', 
+                    overflow: 'hidden', 
+                    textOverflow: 'ellipsis', 
+                    whiteSpace: 'nowrap',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.5rem',
                     color: 'var(--text-primary)',
                   }}>
-                    {model.name}
-                  </span>
-                </div>
-                {model.size_bytes && (
-                  <div style={{ 
-                    fontSize: '0.75rem', 
-                    color: 'var(--text-secondary)',
-                  }}>
-                    {(model.size_bytes / (1024**3)).toFixed(1)} GB
+                    {isLoaded ? (
+                      <span style={{ color: 'var(--success)', fontSize: '0.875rem', fontWeight: 600 }}>?</span>
+                    ) : isSelected ? (
+                      <span style={{ color: 'var(--secondary-color)', fontSize: '0.875rem', fontWeight: 600 }}>?</span>
+                    ) : null}
+                    <span style={{ 
+                      fontFamily: 'monospace', 
+                      fontSize: '0.875rem',
+                      color: 'var(--text-primary)',
+                    }}>
+                      {model.name}
+                    </span>
                   </div>
-                )}
-              </button>
-            ))}
+                  {model.size_bytes && (
+                    <div style={{ 
+                      fontSize: '0.75rem', 
+                      color: 'var(--text-secondary)',
+                    }}>
+                      {(model.size_bytes / (1024**3)).toFixed(1)} GB
+                    </div>
+                  )}
+                </button>
+              );
+            })}
           </div>
 
           <button
@@ -492,7 +525,7 @@ export function ImagePage() {
               boxShadow: 'var(--shadow-md)',
             }}
           >
-            {modelsLoading ? '⏳ Refreshing...' : '🔄 Refresh Models'}
+            {modelsLoading ? '? Refreshing...' : '?? Refresh Models'}
           </button>
         </div>
       )}
@@ -544,14 +577,24 @@ export function ImagePage() {
             
             <div style={{ flex: 1, minWidth: 0 }}>
               <h3 className="gradient-text" style={{ margin: 0, fontSize: '1.25rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                🖼️ Image Generation: {selectedModel ? formatModelName(selectedModel.name) : 'Select Model'}
+                ??? Image Generation
               </h3>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.25rem', flexWrap: 'wrap' }}>
                 <span className={executorStatus.healthy ? 'tag tag-success' : 'tag tag-error'} style={{ fontSize: '0.75rem' }}>
-                  {executorStatus.healthy ? '✅ Online' : '❌ Offline'}
+                  {executorStatus.healthy ? '? Online' : '? Offline'}
                 </span>
-                {selectedLoRA && <span className="tag tag-primary" style={{ fontSize: '0.75rem' }}>✨ {selectedLoRA}</span>}
-                {useControlNet && controlImage && <span className="tag tag-warning" style={{ fontSize: '0.75rem' }}>🎯 ControlNet</span>}
+                {selectedModel && (
+                  <span className="tag tag-info" style={{ fontSize: '0.75rem', fontFamily: 'monospace' }}>
+                    ?? {formatModelName(selectedModel.name)}
+                  </span>
+                )}
+                {executorStatus?.detail?.model_loaded && (
+                  <span className="tag tag-success" style={{ fontSize: '0.75rem' }}>
+                    ? Loaded
+                  </span>
+                )}
+                {selectedLoRA && <span className="tag tag-primary" style={{ fontSize: '0.75rem' }}>? {selectedLoRA}</span>}
+                {useControlNet && controlImage && <span className="tag tag-warning" style={{ fontSize: '0.75rem' }}>?? ControlNet</span>}
                 {generatedImages.length > 0 && (
                   <span className="tag" style={{ fontSize: '0.75rem' }}>
                     {generatedImages.length} image{generatedImages.length !== 1 ? 's' : ''}
@@ -577,6 +620,36 @@ export function ImagePage() {
           </div>
 
           <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+            {selectedModel && (
+              <button
+                onClick={() => initialize()}
+                disabled={initializing || !executorStatus?.is_running}
+                style={{
+                  background: initializing 
+                    ? 'var(--bg-tertiary)' 
+                    : executorStatus?.detail?.model_loaded 
+                      ? 'var(--success-gradient)' 
+                      : 'var(--primary-gradient)',
+                  boxShadow: 'var(--shadow-md)',
+                  padding: '0.75rem 1.25rem',
+                  fontSize: '0.875rem',
+                  whiteSpace: 'nowrap',
+                  transition: 'all 0.2s ease',
+                  cursor: initializing || !executorStatus?.is_running ? 'not-allowed' : 'pointer',
+                }}
+                onMouseEnter={(e) => {
+                  if (!initializing && executorStatus?.is_running) {
+                    e.currentTarget.style.transform = 'translateY(-1px)';
+                  }
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.transform = 'none';
+                }}
+                title={executorStatus?.detail?.model_loaded ? 'Reload model' : 'Load model into OllamaDiffuser'}
+              >
+                {initializing ? '? Loading...' : executorStatus?.detail?.model_loaded ? '?? Reload Model' : '?? Load Model'}
+              </button>
+            )}
             {generatedImages.length > 0 && (
               <button 
                 type="button" 
@@ -620,7 +693,7 @@ export function ImagePage() {
             gap: '1rem',
           }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flex: 1 }}>
-              <span style={{ fontSize: '1.25rem' }}>🎨</span>
+              <span style={{ fontSize: '1.25rem' }}>??</span>
               <span style={{ fontSize: '0.875rem' }}>{error}</span>
             </div>
             <button
@@ -648,7 +721,7 @@ export function ImagePage() {
           boxShadow: 'var(--shadow-md)',
         }}>
           <summary style={{ cursor: 'pointer', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.5rem', userSelect: 'none' }}>
-            ⚙️ Settings
+            ?? Settings
           </summary>
           <div style={{ marginTop: '1rem', display: 'grid', gap: '1rem' }}>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem' }}>
@@ -796,7 +869,7 @@ export function ImagePage() {
 
             {/* ControlNet Section */}
             <details style={{ marginTop: '0.5rem' }}>
-              <summary style={{ cursor: 'pointer', fontWeight: 600, userSelect: 'none', padding: '0.5rem 0' }}>🎯 ControlNet (Guided Generation)</summary>
+              <summary style={{ cursor: 'pointer', fontWeight: 600, userSelect: 'none', padding: '0.5rem 0' }}>?? ControlNet (Guided Generation)</summary>
               <div style={{ marginTop: '1rem', display: 'grid', gap: '1rem', padding: '0.75rem', backgroundColor: 'var(--bg-secondary)', borderRadius: 'var(--radius-md)' }}>
                 <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.875rem' }}>
                   <input
@@ -914,7 +987,7 @@ export function ImagePage() {
           
           {!loading && generatedImages.length === 0 && (
             <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-secondary)' }}>
-              <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>🎨</div>
+              <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>??</div>
               <p style={{ fontSize: '1.125rem', fontWeight: 500 }}>Start generating images</p>
               <p style={{ fontSize: '0.875rem', marginTop: '0.5rem' }}>
                 Using: <strong>{selectedModel ? formatModelName(selectedModel.name) : ''}</strong>
@@ -992,7 +1065,7 @@ export function ImagePage() {
                         title="Download image"
                         aria-label="Download image"
                       >
-                        📥
+                        ??
                       </button>
                       <button
                         onClick={(e) => {
@@ -1012,7 +1085,7 @@ export function ImagePage() {
                         title="Delete image"
                         aria-label="Delete image"
                       >
-                        🗑️
+                        ???
                       </button>
                     </div>
                   </div>
@@ -1035,7 +1108,7 @@ export function ImagePage() {
                             </html>
                           `);
                         }
-                      }}>🔍 Enlarge</span>
+                      }}>?? Enlarge</span>
                     </div>
                   </div>
                 </div>
